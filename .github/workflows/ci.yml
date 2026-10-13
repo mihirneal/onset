@@ -8,7 +8,7 @@ jobs:
   test:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
@@ -27,5 +27,6 @@ jobs:
       - name: Timing-analysis tests
         if: hashFiles('tools/test_analyze_timing.py') != ''
         run: |
-          python3 -m pip install --quiet numpy pandas pytest pyserial
-          python3 -m pytest -q tools
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet numpy pandas pytest pyserial
+          .venv/bin/python -m pytest -q tools
