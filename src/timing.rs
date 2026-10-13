@@ -20,7 +20,7 @@ pub fn onset_to_frame(onset_s: f64, refresh_hz: f64) -> u64 {
 
 /// The time, in seconds after the trigger, at which `frame` starts.
 pub fn frame_to_onset(frame: u64, refresh_hz: f64) -> f64 {
-    frame as f64 / refresh_hz
+    frame as f64 * frame_duration(refresh_hz)
 }
 
 // Everything below only compiles when you run `cargo test`.
