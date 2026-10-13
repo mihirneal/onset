@@ -90,7 +90,7 @@ Only the first response in a window counts. Every press is still recorded in `in
 | `repeat` | `1` | Repeat the rows this many times (before shuffling) |
 | `seed` | random | Shuffle seed. A random seed is recorded in `run.json`; replay it with `--seed` |
 
-With no `file` or `rows`, the trial runs once. Shuffling or repeating can't be combined with `onset_column`; generate a shuffled schedule file instead.
+With no `file` or `rows`, the trial runs once. `onset run --schedule other.tsv` replaces the schedule for one run, which is handy when every run has its own trial list. Shuffling or repeating can't be combined with `onset_column`; generate a shuffled schedule file instead.
 
 ## Rig file
 

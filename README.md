@@ -46,6 +46,18 @@ python3 examples/nsd/make_run.py --run 1          # regenerate an NSD-style sche
 onset run examples/nsd/experiment.toml --rig examples/rigs/dev.toml --simulate --robot --sub 01
 ```
 
+With real NSD images (after accepting the [NSD terms](https://cvnlab.slite.page/p/IB6BSeW_7o/Terms-and-Conditions); keep them outside this repo):
+
+```bash
+aws s3 sync s3://natural-scenes-dataset/nsddata/stimuli/nsd/shared1000/ ~/nsd/shared1000/ --no-sign-request
+# one schedule per run; --history tracks old/new across runs for this participant
+python3 examples/nsd/make_run.py --run 1 --images ~/nsd/shared1000 \
+    --history ~/nsd/sub-01_seen.txt --out ~/nsd/sub-01/run01.tsv
+onset run examples/nsd/experiment.toml --schedule ~/nsd/sub-01/run01.tsv --rig my-rig.toml --sub 01 --run 1
+```
+
+`--schedule FILE` (on `run`, `validate` and `schedule`) swaps in a different trial list without editing the experiment; a copy is saved with the run's logs.
+
 Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. That's handy for figures and for checking stimuli, but it disturbs timing, so never use it in a real session.
 
 ## At the scanner

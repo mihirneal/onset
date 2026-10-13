@@ -1,64 +1,64 @@
-onset	stim_file	memory	answer	image
-12.0	images/placeholder_052.png	new	1	placeholder_052
-16.0	images/placeholder_052.png	old	2	placeholder_052
-20.0	images/placeholder_047.png	new	1	placeholder_047
-24.0	images/placeholder_072.png	new	1	placeholder_072
-28.0	images/placeholder_051.png	new	1	placeholder_051
-32.0	images/placeholder_073.png	new	1	placeholder_073
-36.0	images/placeholder_072.png	old	2	placeholder_072
-40.0	images/placeholder_025.png	new	1	placeholder_025
-44.0	images/placeholder_006.png	new	1	placeholder_006
-52.0	images/placeholder_003.png	new	1	placeholder_003
-56.0	images/placeholder_025.png	old	2	placeholder_025
-60.0	images/placeholder_063.png	new	1	placeholder_063
-64.0	images/placeholder_024.png	new	1	placeholder_024
-68.0	images/placeholder_064.png	new	1	placeholder_064
-72.0	images/placeholder_019.png	new	1	placeholder_019
-76.0	images/placeholder_047.png	old	2	placeholder_047
-80.0	images/placeholder_002.png	new	1	placeholder_002
-84.0	images/placeholder_072.png	old	2	placeholder_072
-88.0	images/placeholder_051.png	old	2	placeholder_051
-96.0	images/placeholder_012.png	new	1	placeholder_012
-100.0	images/placeholder_012.png	old	2	placeholder_012
-104.0	images/placeholder_079.png	new	1	placeholder_079
-108.0	images/placeholder_079.png	old	2	placeholder_079
-112.0	images/placeholder_012.png	old	2	placeholder_012
-116.0	images/placeholder_019.png	old	2	placeholder_019
-120.0	images/placeholder_079.png	old	2	placeholder_079
-124.0	images/placeholder_063.png	old	2	placeholder_063
-128.0	images/placeholder_016.png	new	1	placeholder_016
-136.0	images/placeholder_066.png	new	1	placeholder_066
-140.0	images/placeholder_055.png	new	1	placeholder_055
-144.0	images/placeholder_047.png	old	2	placeholder_047
-148.0	images/placeholder_064.png	old	2	placeholder_064
-152.0	images/placeholder_056.png	new	1	placeholder_056
-156.0	images/placeholder_069.png	new	1	placeholder_069
-160.0	images/placeholder_027.png	new	1	placeholder_027
-164.0	images/placeholder_037.png	new	1	placeholder_037
-168.0	images/placeholder_003.png	old	2	placeholder_003
-172.0	images/placeholder_027.png	old	2	placeholder_027
-176.0	images/placeholder_004.png	new	1	placeholder_004
-180.0	images/placeholder_069.png	old	2	placeholder_069
-184.0	images/placeholder_063.png	old	2	placeholder_063
-192.0	images/placeholder_034.png	new	1	placeholder_034
-196.0	images/placeholder_035.png	new	1	placeholder_035
-200.0	images/placeholder_050.png	new	1	placeholder_050
-204.0	images/placeholder_050.png	old	2	placeholder_050
-208.0	images/placeholder_074.png	new	1	placeholder_074
-212.0	images/placeholder_012.png	old	2	placeholder_012
-216.0	images/placeholder_005.png	new	1	placeholder_005
-220.0	images/placeholder_068.png	new	1	placeholder_068
-224.0	images/placeholder_022.png	new	1	placeholder_022
-228.0	images/placeholder_010.png	new	1	placeholder_010
-232.0	images/placeholder_066.png	old	2	placeholder_066
-236.0	images/placeholder_004.png	old	2	placeholder_004
-244.0	images/placeholder_053.png	new	1	placeholder_053
-248.0	images/placeholder_067.png	new	1	placeholder_067
-252.0	images/placeholder_009.png	new	1	placeholder_009
-256.0	images/placeholder_075.png	new	1	placeholder_075
-260.0	images/placeholder_038.png	new	1	placeholder_038
-264.0	images/placeholder_013.png	new	1	placeholder_013
-268.0	images/placeholder_000.png	new	1	placeholder_000
-272.0	images/placeholder_059.png	new	1	placeholder_059
-276.0	images/placeholder_058.png	new	1	placeholder_058
-280.0	images/placeholder_021.png	new	1	placeholder_021
+onset	stim_file	memory	answer	image	nsd_id
+12.0	images/placeholder_052.png	new	1	placeholder_052	n/a
+16.0	images/placeholder_052.png	old	2	placeholder_052	n/a
+20.0	images/placeholder_047.png	new	1	placeholder_047	n/a
+24.0	images/placeholder_072.png	new	1	placeholder_072	n/a
+28.0	images/placeholder_051.png	new	1	placeholder_051	n/a
+32.0	images/placeholder_073.png	new	1	placeholder_073	n/a
+36.0	images/placeholder_072.png	old	2	placeholder_072	n/a
+40.0	images/placeholder_025.png	new	1	placeholder_025	n/a
+44.0	images/placeholder_006.png	new	1	placeholder_006	n/a
+52.0	images/placeholder_003.png	new	1	placeholder_003	n/a
+56.0	images/placeholder_025.png	old	2	placeholder_025	n/a
+60.0	images/placeholder_063.png	new	1	placeholder_063	n/a
+64.0	images/placeholder_024.png	new	1	placeholder_024	n/a
+68.0	images/placeholder_064.png	new	1	placeholder_064	n/a
+72.0	images/placeholder_019.png	new	1	placeholder_019	n/a
+76.0	images/placeholder_047.png	old	2	placeholder_047	n/a
+80.0	images/placeholder_002.png	new	1	placeholder_002	n/a
+84.0	images/placeholder_072.png	old	2	placeholder_072	n/a
+88.0	images/placeholder_051.png	old	2	placeholder_051	n/a
+96.0	images/placeholder_012.png	new	1	placeholder_012	n/a
+100.0	images/placeholder_012.png	old	2	placeholder_012	n/a
+104.0	images/placeholder_079.png	new	1	placeholder_079	n/a
+108.0	images/placeholder_079.png	old	2	placeholder_079	n/a
+112.0	images/placeholder_012.png	old	2	placeholder_012	n/a
+116.0	images/placeholder_019.png	old	2	placeholder_019	n/a
+120.0	images/placeholder_079.png	old	2	placeholder_079	n/a
+124.0	images/placeholder_063.png	old	2	placeholder_063	n/a
+128.0	images/placeholder_016.png	new	1	placeholder_016	n/a
+136.0	images/placeholder_066.png	new	1	placeholder_066	n/a
+140.0	images/placeholder_055.png	new	1	placeholder_055	n/a
+144.0	images/placeholder_047.png	old	2	placeholder_047	n/a
+148.0	images/placeholder_064.png	old	2	placeholder_064	n/a
+152.0	images/placeholder_056.png	new	1	placeholder_056	n/a
+156.0	images/placeholder_069.png	new	1	placeholder_069	n/a
+160.0	images/placeholder_027.png	new	1	placeholder_027	n/a
+164.0	images/placeholder_037.png	new	1	placeholder_037	n/a
+168.0	images/placeholder_003.png	old	2	placeholder_003	n/a
+172.0	images/placeholder_027.png	old	2	placeholder_027	n/a
+176.0	images/placeholder_004.png	new	1	placeholder_004	n/a
+180.0	images/placeholder_069.png	old	2	placeholder_069	n/a
+184.0	images/placeholder_063.png	old	2	placeholder_063	n/a
+192.0	images/placeholder_034.png	new	1	placeholder_034	n/a
+196.0	images/placeholder_035.png	new	1	placeholder_035	n/a
+200.0	images/placeholder_050.png	new	1	placeholder_050	n/a
+204.0	images/placeholder_050.png	old	2	placeholder_050	n/a
+208.0	images/placeholder_074.png	new	1	placeholder_074	n/a
+212.0	images/placeholder_012.png	old	2	placeholder_012	n/a
+216.0	images/placeholder_005.png	new	1	placeholder_005	n/a
+220.0	images/placeholder_068.png	new	1	placeholder_068	n/a
+224.0	images/placeholder_022.png	new	1	placeholder_022	n/a
+228.0	images/placeholder_010.png	new	1	placeholder_010	n/a
+232.0	images/placeholder_066.png	old	2	placeholder_066	n/a
+236.0	images/placeholder_004.png	old	2	placeholder_004	n/a
+244.0	images/placeholder_053.png	new	1	placeholder_053	n/a
+248.0	images/placeholder_067.png	new	1	placeholder_067	n/a
+252.0	images/placeholder_009.png	new	1	placeholder_009	n/a
+256.0	images/placeholder_075.png	new	1	placeholder_075	n/a
+260.0	images/placeholder_038.png	new	1	placeholder_038	n/a
+264.0	images/placeholder_013.png	new	1	placeholder_013	n/a
+268.0	images/placeholder_000.png	new	1	placeholder_000	n/a
+272.0	images/placeholder_059.png	new	1	placeholder_059	n/a
+276.0	images/placeholder_058.png	new	1	placeholder_058	n/a
+280.0	images/placeholder_021.png	new	1	placeholder_021	n/a

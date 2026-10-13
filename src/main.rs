@@ -45,6 +45,9 @@ enum Cmd {
         experiment: PathBuf,
         #[arg(long)]
         rig: Option<PathBuf>,
+        /// Use this schedule file instead of the experiment's.
+        #[arg(long)]
+        schedule: Option<PathBuf>,
     },
     /// Print the planned timeline, event by event.
     Schedule {
@@ -52,6 +55,9 @@ enum Cmd {
         /// Shuffle seed (if the experiment shuffles and doesn't fix one).
         #[arg(long, default_value_t = 1)]
         seed: u64,
+        /// Use this schedule file instead of the experiment's.
+        #[arg(long)]
+        schedule: Option<PathBuf>,
     },
     /// Measure refresh rate and dropped frames; flashes the photodiode patch every frame.
     TimingTest {
@@ -72,6 +78,9 @@ enum Cmd {
 #[derive(clap::Args)]
 struct RunArgs {
     experiment: PathBuf,
+    /// Use this schedule file instead of the experiment's (e.g. one per run).
+    #[arg(long)]
+    schedule: Option<PathBuf>,
     /// Rig file (display, trigger, buttons). Defaults: keyboard trigger "5", buttons 1-4.
     #[arg(long)]
     rig: Option<PathBuf>,
@@ -109,8 +118,10 @@ fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
         Cmd::Run(args) => cmd_run(args),
-        Cmd::Validate { experiment, rig } => cmd_validate(&experiment, rig.as_deref()),
-        Cmd::Schedule { experiment, seed } => cmd_schedule(&experiment, seed),
+        Cmd::Validate { experiment, rig, schedule } => {
+            cmd_validate(&experiment, rig.as_deref(), schedule.as_deref())
+        }
+        Cmd::Schedule { experiment, seed, schedule } => cmd_schedule(&experiment, seed, schedule.as_deref()),
         Cmd::TimingTest { rig, seconds, windowed } => cmd_timing_test(rig.as_deref(), seconds, windowed),
         Cmd::Displays => cmd_displays(),
         Cmd::Ports => cmd_ports(),
@@ -132,8 +143,20 @@ fn nominal_hz(rig: &Rig) -> f64 {
     rig.display.expected_hz.unwrap_or(60.0)
 }
 
-fn cmd_validate(exp_path: &Path, rig_path: Option<&Path>) -> Result<()> {
-    let exp = Experiment::load(exp_path)?;
+/// Load an experiment, optionally swapping in a different schedule file.
+fn load_experiment(path: &Path, schedule: Option<&Path>) -> Result<Experiment> {
+    let mut exp = Experiment::load(path)?;
+    if let Some(file) = schedule {
+        let abs = std::fs::canonicalize(file)
+            .with_context(|| format!("can't find schedule file {}", file.display()))?;
+        exp.schedule.file = Some(abs.display().to_string());
+        exp.schedule.rows = None;
+    }
+    Ok(exp)
+}
+
+fn cmd_validate(exp_path: &Path, rig_path: Option<&Path>, schedule: Option<&Path>) -> Result<()> {
+    let exp = load_experiment(exp_path, schedule)?;
     let rig = load_rig(rig_path)?;
     let tl = schedule::compile(&exp, 1, nominal_hz(&rig))?;
     for ev in &exp.trial.events {
@@ -179,8 +202,8 @@ fn fmt_duration(s: f64) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-fn cmd_schedule(exp_path: &Path, seed: u64) -> Result<()> {
-    let exp = Experiment::load(exp_path)?;
+fn cmd_schedule(exp_path: &Path, seed: u64, schedule: Option<&Path>) -> Result<()> {
+    let exp = load_experiment(exp_path, schedule)?;
     let tl = schedule::compile(&exp, seed, 60.0)?;
     print_overview(&exp, &tl);
     println!();
@@ -315,7 +338,8 @@ fn random_seed() -> u64 {
 fn cmd_run(args: RunArgs) -> Result<()> {
     // Leaked on purpose: the experiment lives for the whole process, and a
     // 'static reference lets the run borrow it without lifetime plumbing.
-    let exp: &'static Experiment = Box::leak(Box::new(Experiment::load(&args.experiment)?));
+    let exp: &'static Experiment =
+        Box::leak(Box::new(load_experiment(&args.experiment, args.schedule.as_deref())?));
     let mut rig = load_rig(args.rig.as_deref())?;
     if args.windowed {
         rig.display.fullscreen = false;

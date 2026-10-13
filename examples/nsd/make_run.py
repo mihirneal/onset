@@ -14,13 +14,19 @@ images/placeholder_*.png, generating them first if missing (abstract color
 patterns, NOT NSD images: NSD's terms forbid redistributing its stimuli).
 
     python3 examples/nsd/make_run.py --run 1 --seed 1
-    python3 examples/nsd/make_run.py --run 2 --images ~/nsd/shared1000
+    python3 examples/nsd/make_run.py --run 2 --images ~/nsd/shared1000 \
+        --history ~/nsd/sub-01_seen.txt --out ~/nsd/sub-01/run02.tsv
+
+--history keeps "old/new" honest across runs and sessions: images listed in
+it count as seen before, and this run's new images are appended to it. Use
+one history file per participant.
 
 Python standard library only.
 """
 
 import argparse
 import random
+import re
 import struct
 import zlib
 from pathlib import Path
@@ -92,6 +98,7 @@ def main() -> None:
     ap.add_argument("--images", type=Path, help="folder of images to draw from (default: placeholders)")
     ap.add_argument("--repeat-prob", type=float, default=0.3, help="chance a trial repeats an earlier image")
     ap.add_argument("--out", type=Path, default=HERE / "schedule.tsv")
+    ap.add_argument("--history", type=Path, help="per-participant list of images already shown (read + appended)")
     args = ap.parse_args()
     rng = random.Random(args.seed * 1000 + args.run)
 
@@ -119,15 +126,23 @@ def main() -> None:
                 is_image = False
         layout.append(is_image)
 
-    # Continuous recognition: some trials repeat an image seen earlier in the run.
-    unused = pool[:]
+    # Continuous recognition: some trials repeat an image seen earlier
+    # (in this run, or in earlier runs listed in --history).
+    history = []
+    if args.history and args.history.exists():
+        history = [line.strip() for line in args.history.read_text().splitlines() if line.strip()]
+    by_stem = {p.stem: p for p in pool}
+    seen = [by_stem[h] for h in history if h in by_stem]
+    unused = [p for p in pool if p.stem not in set(history)]
     rng.shuffle(unused)
-    seen = []
+    first_new = len(seen)
     rows = []
     for slot, is_image in enumerate(layout):
         if not is_image:
             continue
         onset = PRE_BLANK + slot * SLOT
+        if not seen and not unused:
+            raise SystemExit("ran out of images: every image in the pool is already in --history")
         if seen and (rng.random() < args.repeat_prob or not unused):
             img, memory = rng.choice(seen), "old"
         else:
@@ -139,10 +154,19 @@ def main() -> None:
             rel = img
         rows.append((onset, rel.as_posix(), memory, "1" if memory == "new" else "2", img.stem))
 
+    args.out.parent.mkdir(parents=True, exist_ok=True)
     with open(args.out, "w") as f:
-        f.write("onset\tstim_file\tmemory\tanswer\timage\n")
+        f.write("onset\tstim_file\tmemory\tanswer\timage\tnsd_id\n")
         for onset, stim, memory, answer, name in rows:
-            f.write(f"{onset:.1f}\t{stim}\t{memory}\t{answer}\t{name}\n")
+            # NSD file names look like shared0001_nsd02951.png -> 73k ID 2951.
+            m = re.search(r"nsd(\d+)", name)
+            nsd_id = str(int(m.group(1))) if m else "n/a"
+            f.write(f"{onset:.1f}\t{stim}\t{memory}\t{answer}\t{name}\t{nsd_id}\n")
+    if args.history:
+        args.history.parent.mkdir(parents=True, exist_ok=True)
+        with open(args.history, "a") as f:
+            for img in seen[first_new:]:
+                f.write(img.stem + "\n")
     n_old = sum(r[2] == "old" for r in rows)
     print(f"wrote {args.out}: {len(rows)} image trials ({n_old} old), {SLOTS - len(rows)} blank slots, run {args.run}")
 
