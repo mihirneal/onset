@@ -1,0 +1,71 @@
+# Natural Scenes Dataset core run (Allen et al., 2022, Nature Neuroscience).
+#
+# Matches the original presentation code (runnsd.m): 300 s run = 12 s blank +
+# 68 slots × 4 s (3 s image + 1 s gap; 5-6 slots blank) + 16 s blank. 7T, TR 1.6 s,
+# 188 volumes. BOLDscreen 32 at 1920×1080, 120 Hz, ~85 px/deg: images are 8.4°
+# (714 px), fixation dot 0.2° (18 px) red at 50% opacity with a 3 px black
+# border, always on top. Continuous recognition: button 1 = NEW, 2 = OLD.
+#
+# Make a schedule (placeholder images unless you pass --images):
+#   python3 examples/nsd/make_run.py --run 1
+#   onset run examples/nsd/experiment.toml --rig examples/rigs/dev.toml --simulate --robot --sub 01
+#
+# Differences from the original:
+# - NSD loaded a squaring gamma table on its linear BOLDscreen. Onset sends
+#   values unmodified, which matches NSD's look on a normal gamma-2.2 display.
+# - NSD scored responses from 250 ms after onset until 250 ms into the next
+#   trial; here the window is 0-4 s from onset. Every press is in inputs.tsv
+#   if you want to re-score with NSD's window.
+# - Pixel sizes assume NSD's ~85 px/deg. On another display, scale 714 and 18
+#   to keep 8.4° and 0.2°.
+
+[experiment]
+name = "NSD core run"
+task = "nsd"
+background = [127, 127, 127]
+baseline = "fixation"
+font_size = 40
+instructions = """In this task, you will see a series of images. Please keep your eyes on the red dot.
+
+Your task is to judge whether you have seen each image before, at any point in the experiment.
+
+Index finger (1): NEW image
+Middle finger (2): OLD image
+
+Respond during each image or shortly after."""
+waiting_text = "The scan will begin shortly."
+
+[scanner]
+tr = 1.6
+volumes = 188
+
+[stimuli.fixation]
+type = "circle"
+radius = 9                    # 18 px = 0.2°
+color = [255, 0, 0, 128]      # red, 50% opacity
+border_width = 3
+border_color = [0, 0, 0, 128]
+
+[stimuli.image]
+type = "image"
+path = "{stim_file}"
+width = 714                   # 8.4°
+height = 714
+
+[stimuli.scene]
+type = "group"
+items = ["image", "fixation"]
+
+[trial]
+trial_type = "{memory}"
+
+[[trial.events]]
+name = "image"
+stimulus = "scene"
+duration = 3.0
+# The 1 s gap that follows is the baseline (fixation); keep listening through it.
+response = { buttons = ["1", "2"], correct = "{answer}", window = 4.0 }
+
+[schedule]
+file = "schedule.tsv"
+onset_column = "onset"

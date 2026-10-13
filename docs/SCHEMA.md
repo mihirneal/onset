@@ -1,0 +1,127 @@
+# Experiment and rig file reference
+
+Onset reads two TOML files:
+
+- **experiment** (`experiment.toml`): what to show and when. Portable between computers.
+- **rig** (`rig.toml`): this computer's display, trigger box, buttons, and photodiode. Swap rigs to move between your desk and the scanner.
+
+Run `onset validate experiment.toml --rig rig.toml` after every edit. Unknown keys are errors, so typos don't slip through silently.
+
+## Templates
+
+Any string marked *template* can use `{column}` to insert a value from the current trial's schedule row. `{trial}` is the trial number. `{outcome}` is the result of this trial's response window: `correct`, `incorrect`, or `miss`, or `response`/`miss` when no correct answer is defined. Use `{{` and `}}` for literal braces.
+
+## Experiment file
+
+### `[experiment]`
+
+| key | default | |
+|---|---|---|
+| `name` | required | Human-readable name |
+| `task` | required | BIDS task label; letters and digits only |
+| `background` | `"black"` | Screen color |
+| `color` | `"white"` | Default color for text and fixation |
+| `font_size` | `48` | Default text size (logical px) |
+| `font` | system sans-serif | Font family name |
+| `instructions` | none | Text shown before the run; the operator presses **Space** to continue |
+| `waiting_text` | `"Get ready…"` | Shown while waiting for the first trigger |
+| `baseline` | `"blank"` | Stimulus shown whenever no event is running |
+
+Colors can be names (`white black gray red green blue yellow`), hex values (`"#808080"`, `"#fff"`, or `"#ff000080"` with alpha), or `[r, g, b]` / `[r, g, b, a]` from 0 to 255. Values go to the display without gamma conversion.
+
+### `[scanner]`
+
+| key | default | |
+|---|---|---|
+| `tr` | none | Repetition time (s). Used to check the run length |
+| `dummy_volumes` | `0` | Triggers to ignore before t = 0 |
+| `volumes` | none | With `tr`, the run lasts at least `volumes × tr` seconds |
+
+### `[stimuli.<name>]`
+
+Each stimulus has a `type`. Positions `x` and `y` are logical pixels from the screen center, with +y up. `blank` is built in.
+
+| type | keys |
+|---|---|
+| `blank` | none |
+| `fixation` | `size` (40), `thickness` (4), `color`, `x`, `y` |
+| `text` | `text` (*template*), `size`, `color`, `x`, `y`. Multi-line text is centered. |
+| `rect` | `width`, `height`, `color`, `x`, `y` |
+| `circle` | `radius`, `color`, `border_width` (0), `border_color` (black), `x`, `y`. The border is inside the radius |
+| `image` | `path` (*template*, relative to the experiment file), `width`, `height` (default: the image's pixel size; give one to keep the aspect ratio), `x`, `y` |
+| `checkerboard` | Polar checkerboard: `radius` (500), `inner_radius` (12), `rings` (8, log-spaced), `wedges` (24), `reversal_hz` (8), `color_a`, `color_b`, `x`, `y` |
+| `group` | `items = ["a", "b", …]`, drawn in order with later items on top. Text is always drawn above shapes and images. |
+
+### `[trial]` and `[[trial.events]]`
+
+A trial is a fixed sequence of events, each starting when the previous one ends. Every schedule row runs this sequence once.
+
+| key | default | |
+|---|---|---|
+| `trial.trial_type` | the event name | BIDS `trial_type` (*template*) |
+| `name` | required | Event name (the `event` column in logs) |
+| `stimulus` | required | Stimulus name (*template*, may use `{outcome}`) |
+| `duration` | required | Seconds, number or *template* (e.g. `"{iti}"`) |
+| `trial_type` | trial's | Per-event override (*template*) |
+| `log` | `true` | Include in BIDS events.tsv (always in the raw event log) |
+| `response` | none | See below |
+
+`response = { … }`:
+
+| key | default | |
+|---|---|---|
+| `buttons` | required | Button labels (from the rig's `[buttons]`) that count |
+| `correct` | none | Correct button (*template*, e.g. `"{answer}"`) |
+| `window` | event duration | Seconds after onset during which responses count. Can extend into later events |
+| `end_on_response` | `false` | Swap the stimulus for `after_response` once answered. Later events keep their scheduled times |
+| `after_response` | baseline | What to show after a response when `end_on_response = true` |
+
+Only the first response in a window counts. Every press is still recorded in `inputs.tsv`. Reaction time is measured from the event's **measured** onset (its first flip).
+
+### `[schedule]`
+
+| key | default | |
+|---|---|---|
+| `file` | none | TSV (or `.csv`) with a header row; one row per trial |
+| `rows` | none | Rows written inline instead: `rows = [{ word = "red" }, …]` |
+| `onset_column` | none | Column with each trial's absolute onset (seconds after t = 0). Without it, trials run back to back |
+| `start_delay` | `0` | Back-to-back mode: seconds before the first trial |
+| `order` | `"sequential"` | or `"shuffle"` |
+| `repeat` | `1` | Repeat the rows this many times (before shuffling) |
+| `seed` | random | Shuffle seed. A random seed is recorded in `run.json`; replay it with `--seed` |
+
+With no `file` or `rows`, the trial runs once. Shuffling or repeating can't be combined with `onset_column`; generate a shuffled schedule file instead.
+
+## Rig file
+
+```toml
+[display]
+monitor = 1            # index or part of the name, from `onset displays`. Default: a non-primary monitor if present
+fullscreen = true
+window_size = [1280, 800]   # when not fullscreen
+expected_hz = 60       # warn if the measured refresh differs by > 1%
+hide_cursor = true
+
+[trigger]
+source = "keyboard"    # "keyboard" | "serial" | "simulated"
+key = "5"              # keyboard: the key the trigger box types
+port = "/dev/tty.usbserial-1410"   # serial: from `onset ports`
+baud = 115200
+serial_char = "5"      # serial: the character that means trigger; other characters are buttons
+simulated_tr = 2.0     # simulated: seconds between fake triggers (the experiment's TR wins)
+
+[buttons]              # raw key or serial character = label used in experiments
+"1" = "index"
+"2" = "middle"
+
+[photodiode]
+enabled = true
+corner = "bottom-left" # bottom-right, top-left, top-right
+size = 40              # logical px
+flash_frames = 3       # white for this many frames at every onset, black otherwise
+
+[output]
+dir = "data"
+```
+
+Operator keys always work, whatever the rig: **Space** or **Enter** continues past the instructions, and **Esc** aborts and saves.

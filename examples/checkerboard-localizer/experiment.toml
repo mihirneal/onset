@@ -1,0 +1,50 @@
+# Block-design visual localizer: 16 s of 8 Hz flickering checkerboard
+# alternating with 16 s of fixation, 6 cycles, starting and ending on rest.
+#
+#   onset run examples/checkerboard-localizer/experiment.toml --simulate --windowed
+
+[experiment]
+name = "Checkerboard localizer"
+task = "checkerboard"
+background = "#808080"
+baseline = "fixation"
+instructions = "Keep your eyes on the cross in the middle.\n\nPress any button when the cross turns red."
+waiting_text = "The scan is about to start…"
+
+[scanner]
+tr = 2.0
+dummy_volumes = 0
+volumes = 104          # 6 × 32 s + 16 s final rest = 208 s
+
+[stimuli.fixation]
+type = "fixation"
+size = 30
+thickness = 4
+
+[stimuli.checker]
+type = "group"
+items = ["checkerboard", "fixation"]
+
+[stimuli.checkerboard]
+type = "checkerboard"
+radius = 520
+inner_radius = 14
+rings = 8
+wedges = 24
+reversal_hz = 8
+
+[trial]
+trial_type = "{block}"
+
+[[trial.events]]
+name = "block"
+stimulus = "{stimulus}"
+duration = 16.0
+
+[schedule]
+rows = [
+  { block = "rest", stimulus = "fixation" },
+  { block = "checkerboard", stimulus = "checker" },
+]
+repeat = 6
+start_delay = 0.0

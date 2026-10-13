@@ -1,0 +1,1150 @@
+//! The `onset` command-line program.
+
+mod console;
+#[cfg(target_os = "macos")]
+mod macos;
+mod priority;
+
+use anyhow::{Context, Result, bail};
+use clap::{Parser, Subcommand};
+use console::{bold, dim, green, red, yellow};
+use onset::experiment::Experiment;
+use onset::input::{self, RawInput, Source};
+use onset::output::{self, LogMsg, Paths, WriterReport};
+use onset::render::{PhotodiodePatch, Renderer};
+use onset::rig::{MonitorSelect, Rig, TriggerSource};
+use onset::run::{EndReason, Input, Phase, Run};
+use onset::schedule::{self, Timeline};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+use winit::application::ApplicationHandler;
+use winit::event::{ElementState, WindowEvent};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
+use winit::keyboard::{Key, NamedKey};
+use winit::monitor::MonitorHandle;
+use winit::window::{Fullscreen, Window, WindowId};
+
+#[derive(Parser)]
+#[command(name = "onset", version, about = "Frame-accurate stimulus presentation for fMRI")]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+enum Cmd {
+    /// Run an experiment.
+    Run(RunArgs),
+    /// Check an experiment (and optionally a rig file) without running it.
+    Validate {
+        experiment: PathBuf,
+        #[arg(long)]
+        rig: Option<PathBuf>,
+    },
+    /// Print the planned timeline, event by event.
+    Schedule {
+        experiment: PathBuf,
+        /// Shuffle seed (if the experiment shuffles and doesn't fix one).
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+    },
+    /// Measure refresh rate and dropped frames; flashes the photodiode patch every frame.
+    TimingTest {
+        #[arg(long)]
+        rig: Option<PathBuf>,
+        #[arg(long, default_value_t = 10.0)]
+        seconds: f64,
+        /// Use a window instead of fullscreen.
+        #[arg(long)]
+        windowed: bool,
+    },
+    /// List connected monitors (for the rig's `[display] monitor`).
+    Displays,
+    /// List serial ports (for the rig's `[trigger] port`).
+    Ports,
+}
+
+#[derive(clap::Args)]
+struct RunArgs {
+    experiment: PathBuf,
+    /// Rig file (display, trigger, buttons). Defaults: keyboard trigger "5", buttons 1-4.
+    #[arg(long)]
+    rig: Option<PathBuf>,
+    /// Subject label, e.g. 01. Asked for if missing.
+    #[arg(long, short)]
+    sub: Option<String>,
+    /// Session label.
+    #[arg(long)]
+    ses: Option<String>,
+    /// Run number. Defaults to the next one without data.
+    #[arg(long, short)]
+    run: Option<u32>,
+    /// Output directory (overrides the rig's `[output] dir`).
+    #[arg(long)]
+    out: Option<PathBuf>,
+    /// Use a window instead of fullscreen.
+    #[arg(long)]
+    windowed: bool,
+    /// Fake scanner triggers every TR seconds (default: the experiment's TR, or 2).
+    #[arg(long, value_name = "TR", num_args = 0..=1, default_missing_value = "0")]
+    simulate: Option<f64>,
+    /// Overwrite existing data for this run.
+    #[arg(long)]
+    force: bool,
+    /// Shuffle seed (default: random, and recorded in the log).
+    #[arg(long)]
+    seed: Option<u64>,
+    /// Simulated participant: presses buttons (mostly correct, 350-650 ms RTs)
+    /// so you can dry-run the whole pipeline. Combine with --simulate.
+    #[arg(long)]
+    robot: bool,
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let result = match cli.cmd {
+        Cmd::Run(args) => cmd_run(args),
+        Cmd::Validate { experiment, rig } => cmd_validate(&experiment, rig.as_deref()),
+        Cmd::Schedule { experiment, seed } => cmd_schedule(&experiment, seed),
+        Cmd::TimingTest { rig, seconds, windowed } => cmd_timing_test(rig.as_deref(), seconds, windowed),
+        Cmd::Displays => cmd_displays(),
+        Cmd::Ports => cmd_ports(),
+    };
+    if let Err(e) = result {
+        eprintln!("{} {e:#}", red("error:"));
+        std::process::exit(1);
+    }
+}
+
+fn load_rig(path: Option<&Path>) -> Result<Rig> {
+    match path {
+        Some(p) => Rig::load(p),
+        None => Ok(Rig::default()),
+    }
+}
+
+fn nominal_hz(rig: &Rig) -> f64 {
+    rig.display.expected_hz.unwrap_or(60.0)
+}
+
+fn cmd_validate(exp_path: &Path, rig_path: Option<&Path>) -> Result<()> {
+    let exp = Experiment::load(exp_path)?;
+    let rig = load_rig(rig_path)?;
+    let tl = schedule::compile(&exp, 1, nominal_hz(&rig))?;
+    for ev in &exp.trial.events {
+        if let Some(r) = &ev.response {
+            for b in &r.buttons {
+                if !rig.is_known_button(b) {
+                    println!(
+                        "{} event {:?} accepts button {b:?}, but the rig has no key mapped to it (rig buttons: {})",
+                        yellow("warning:"),
+                        ev.name,
+                        rig.buttons.values().cloned().collect::<Vec<_>>().join(", ")
+                    );
+                }
+            }
+        }
+    }
+    print_overview(&exp, &tl);
+    println!("{}", green("✓ experiment is valid"));
+    Ok(())
+}
+
+fn print_overview(exp: &Experiment, tl: &Timeline) {
+    let logged = tl.events.iter().filter(|e| e.log).count();
+    println!("{}  {}  task-{}", bold("▌"), bold(&exp.experiment.name), exp.experiment.task);
+    println!(
+        "   {} trials · {} events ({} in events.tsv) · {} · {} images",
+        tl.trials.len(),
+        tl.events.len(),
+        logged,
+        fmt_duration(tl.end),
+        tl.images.len()
+    );
+    if let (Some(tr), Some(v)) = (exp.scanner.tr, exp.scanner.volumes) {
+        println!("   scanner: {v} volumes × TR {tr} s, {} dummy", exp.scanner.dummy_volumes);
+    }
+    for w in &tl.warnings {
+        println!("{} {w}", yellow("warning:"));
+    }
+}
+
+fn fmt_duration(s: f64) -> String {
+    let s = s.round() as u64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+fn cmd_schedule(exp_path: &Path, seed: u64) -> Result<()> {
+    let exp = Experiment::load(exp_path)?;
+    let tl = schedule::compile(&exp, seed, 60.0)?;
+    print_overview(&exp, &tl);
+    println!();
+    println!(
+        "{}",
+        dim(&format!(
+            "{:>9}  {:>8}  {:>5}  {:<12} {:<18} {:<14} {}",
+            "onset", "dur", "trial", "event", "stimulus", "trial_type", "response"
+        ))
+    );
+    for e in &tl.events {
+        let resp = e.response.as_ref().map_or(String::new(), |r| {
+            format!(
+                "{}{} ({:.2}s)",
+                r.buttons.join("/"),
+                r.correct.as_ref().map_or(String::new(), |c| format!(" ✓{c}")),
+                r.window
+            )
+        });
+        let line = format!(
+            "{:>9.3}  {:>8.3}  {:>5}  {:<12} {:<18} {:<14} {}",
+            e.onset, e.duration, e.trial, e.name, e.stimulus, e.trial_type, resp
+        );
+        if e.log { println!("{line}") } else { println!("{}", dim(&line)) }
+    }
+    println!("{}", dim(&format!("{:>9.3}  end", tl.end)));
+    Ok(())
+}
+
+fn cmd_ports() -> Result<()> {
+    let ports = serialport::available_ports().context("can't list serial ports")?;
+    if ports.is_empty() {
+        println!("No serial ports found.");
+    }
+    for p in ports {
+        let desc = match p.port_type {
+            serialport::SerialPortType::UsbPort(u) => format!(
+                "USB {:04x}:{:04x} {} {}",
+                u.vid,
+                u.pid,
+                u.manufacturer.unwrap_or_default(),
+                u.product.unwrap_or_default()
+            ),
+            other => format!("{other:?}"),
+        };
+        println!("{}  {}", bold(&p.port_name), dim(&desc));
+    }
+    Ok(())
+}
+
+// ───────────────────────────── displays ─────────────────────────────
+
+fn cmd_displays() -> Result<()> {
+    struct Lister;
+    impl ApplicationHandler for Lister {
+        fn resumed(&mut self, el: &ActiveEventLoop) {
+            let primary = el.primary_monitor();
+            for (i, m) in el.available_monitors().enumerate() {
+                let size = m.size();
+                let hz = m
+                    .refresh_rate_millihertz()
+                    .map_or("? Hz".into(), |mhz| format!("{:.2} Hz", mhz as f64 / 1000.0));
+                let star = if Some(&m) == primary.as_ref() { " (primary)" } else { "" };
+                println!(
+                    "{}  {}  {}×{} @ {hz}, scale {}{star}",
+                    bold(&format!("[{i}]")),
+                    m.name().unwrap_or_else(|| "unnamed".into()),
+                    size.width,
+                    size.height,
+                    m.scale_factor()
+                );
+            }
+            el.exit();
+        }
+        fn window_event(&mut self, _: &ActiveEventLoop, _: WindowId, _: WindowEvent) {}
+    }
+    EventLoop::new()?.run_app(&mut Lister)?;
+    Ok(())
+}
+
+fn pick_monitor(el: &ActiveEventLoop, sel: Option<&MonitorSelect>) -> Result<Option<MonitorHandle>> {
+    let monitors: Vec<MonitorHandle> = el.available_monitors().collect();
+    let primary = el.primary_monitor();
+    Ok(match sel {
+        Some(MonitorSelect::Index(i)) => Some(
+            monitors
+                .get(*i)
+                .cloned()
+                .with_context(|| format!("no monitor [{i}]; run `onset displays` to list them"))?,
+        ),
+        Some(MonitorSelect::Name(name)) => Some(
+            monitors
+                .iter()
+                .find(|m| m.name().is_some_and(|n| n.to_lowercase().contains(&name.to_lowercase())))
+                .cloned()
+                .with_context(|| format!("no monitor named like {name:?}; run `onset displays`"))?,
+        ),
+        // Prefer a secondary monitor (the projector) when there is one.
+        None => monitors.iter().find(|m| Some(*m) != primary.as_ref()).cloned().or(primary),
+    })
+}
+
+// ───────────────────────────── run ─────────────────────────────
+
+struct RunSetup {
+    exp: &'static Experiment,
+    rig: Rig,
+    timeline: Timeline,
+    paths: Paths,
+    sub: String,
+    ses: Option<String>,
+    run: u32,
+    simulate_tr: Option<f64>,
+    exp_path: PathBuf,
+    rig_path: Option<PathBuf>,
+    robot: bool,
+}
+
+fn prompt(label: &str) -> Result<String> {
+    eprint!("{label}: ");
+    std::io::stderr().flush()?;
+    let mut s = String::new();
+    std::io::stdin().read_line(&mut s)?;
+    Ok(s.trim().to_string())
+}
+
+fn random_seed() -> u64 {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    (t.as_nanos() as u64) % 1_000_000_000
+}
+
+fn cmd_run(args: RunArgs) -> Result<()> {
+    // Leaked on purpose: the experiment lives for the whole process, and a
+    // 'static reference lets the run borrow it without lifetime plumbing.
+    let exp: &'static Experiment = Box::leak(Box::new(Experiment::load(&args.experiment)?));
+    let mut rig = load_rig(args.rig.as_deref())?;
+    if args.windowed {
+        rig.display.fullscreen = false;
+    }
+    let seed = args.seed.unwrap_or_else(random_seed);
+    let timeline = schedule::compile(exp, seed, nominal_hz(&rig))?;
+
+    let sub = match args.sub {
+        Some(s) => s,
+        None => prompt("Subject (e.g. 01)")?,
+    };
+    output::check_label("subject", &sub)?;
+    if let Some(ses) = &args.ses {
+        output::check_label("session", ses)?;
+    }
+    if args.robot {
+        println!("   {}", yellow("robot participant: button presses are simulated"));
+    }
+    let out_dir = args.out.clone().unwrap_or_else(|| rig.output.dir.clone());
+    let task = exp.experiment.task.clone();
+    let run = match args.run {
+        Some(r) => {
+            let p = Paths::new(&out_dir, &sub, args.ses.as_deref(), &task, r);
+            if p.exists() && !args.force {
+                let free = output::next_free_run(&out_dir, &sub, args.ses.as_deref(), &task, r);
+                bail!(
+                    "data for run {r} already exists ({}).\n  Use --run {free} for a new run, or --force to overwrite.",
+                    p.events_tsv().display()
+                );
+            }
+            r
+        }
+        None => output::next_free_run(&out_dir, &sub, args.ses.as_deref(), &task, 1),
+    };
+    let paths = Paths::new(&out_dir, &sub, args.ses.as_deref(), &task, run);
+
+    let simulate_tr = match args.simulate {
+        Some(tr) if tr > 0.0 => Some(tr),
+        Some(_) => Some(exp.scanner.tr.unwrap_or(rig.trigger.simulated_tr)),
+        None if rig.trigger.source == TriggerSource::Simulated => {
+            Some(exp.scanner.tr.unwrap_or(rig.trigger.simulated_tr))
+        }
+        None => None,
+    };
+
+    print_overview(exp, &timeline);
+    let trigger_desc = match (simulate_tr, rig.trigger.source) {
+        (Some(tr), _) => format!("simulated scanner, TR {tr} s"),
+        (None, TriggerSource::Keyboard) => format!("keyboard key {:?}", rig.trigger.key),
+        (None, TriggerSource::Serial) => format!(
+            "serial {} @ {} baud, char {:?}",
+            rig.trigger.port.as_deref().unwrap_or("?"),
+            rig.trigger.baud,
+            rig.trigger.serial_char
+        ),
+        (None, TriggerSource::Simulated) => unreachable!(),
+    };
+    println!(
+        "   sub-{sub}{} run-{run:02} → {}",
+        args.ses.as_ref().map_or(String::new(), |s| format!(" ses-{s}")),
+        paths.events_tsv().display()
+    );
+    println!("   trigger: {trigger_desc}");
+    println!("   {}", dim("Esc aborts (data is saved) · Space continues past instructions"));
+
+    let setup = RunSetup {
+        exp,
+        rig,
+        timeline,
+        paths,
+        sub,
+        ses: args.ses,
+        run,
+        simulate_tr,
+        exp_path: args.experiment,
+        rig_path: args.rig,
+        robot: args.robot,
+    };
+    present(Mode::Run(setup))
+}
+
+fn cmd_timing_test(rig_path: Option<&Path>, seconds: f64, windowed: bool) -> Result<()> {
+    let mut rig = load_rig(rig_path)?;
+    if windowed {
+        rig.display.fullscreen = false;
+    }
+    println!("{} flashing for {seconds} s… (Esc to stop early)", bold("timing test:"));
+    present(Mode::TimingTest { rig, seconds })
+}
+
+#[allow(clippy::large_enum_variant)]
+enum Mode {
+    Run(RunSetup),
+    TimingTest { rig: Rig, seconds: f64 },
+}
+
+/// Shared slot so the panic hook can finish the logs if anything crashes.
+type WriterSlot = Arc<Mutex<Option<(Sender<LogMsg>, JoinHandle<Result<WriterReport>>)>>>;
+
+fn present(mode: Mode) -> Result<()> {
+    let writer: WriterSlot = Arc::new(Mutex::new(None));
+    {
+        let writer = writer.clone();
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            if let Ok(mut slot) = writer.lock() {
+                if let Some((tx, handle)) = slot.take() {
+                    let _ = tx.send(LogMsg::Finish(serde_json::json!({
+                        "end_reason": "crashed",
+                        "panic": info.to_string(),
+                    })));
+                    drop(tx);
+                    let _ = handle.join();
+                    eprintln!("\nonset crashed; data up to the crash was saved.");
+                }
+            }
+            default_hook(info);
+        }));
+    }
+    let interrupted = Arc::new(AtomicBool::new(false));
+    {
+        let flag = interrupted.clone();
+        let _ = ctrlc::set_handler(move || flag.store(true, Ordering::SeqCst));
+    }
+
+    let event_loop = EventLoop::new()?;
+    event_loop.set_control_flow(ControlFlow::Poll);
+    priority::raise();
+    let (raw_tx, raw_rx) = channel();
+    let mut app = App {
+        mode: Some(mode),
+        state: None,
+        epoch: Instant::now(),
+        raw_tx,
+        raw_rx,
+        stop: Arc::new(AtomicBool::new(false)),
+        interrupted,
+        writer,
+        result: None,
+        console: console::Status::new(),
+        stalled_since: None,
+        stall_warned: false,
+        last_restore: None,
+    };
+    event_loop.run_app(&mut app)?;
+    app.stop.store(true, Ordering::SeqCst);
+    app.result.unwrap_or(Ok(()))
+}
+
+struct App {
+    mode: Option<Mode>,
+    state: Option<Active>,
+    epoch: Instant,
+    raw_tx: Sender<RawInput>,
+    raw_rx: Receiver<RawInput>,
+    stop: Arc<AtomicBool>,
+    interrupted: Arc<AtomicBool>,
+    writer: WriterSlot,
+    result: Option<Result<()>>,
+    console: console::Status,
+    stalled_since: Option<Instant>,
+    stall_warned: bool,
+    last_restore: Option<Instant>,
+}
+
+/// Everything that exists once the window is open.
+struct Active {
+    renderer: Renderer,
+    window: Arc<Window>,
+    frame: u64,
+    kind: ActiveKind,
+}
+
+#[allow(clippy::large_enum_variant)]
+enum ActiveKind {
+    Run(Box<ActiveRun>),
+    TimingTest(TimingTest),
+}
+
+struct ActiveRun {
+    run: Run<'static>,
+    setup: Box<RunSetup>,
+    log: Option<Sender<LogMsg>>,
+    t0_sent: bool,
+    simulator_started: bool,
+    started_wall: chrono::DateTime<chrono::Local>,
+    last_status: Instant,
+    warned_hz: bool,
+    /// Every scene the run can show, re-prepared whenever the window size changes.
+    scenes: Vec<onset::scene::Scene>,
+    prewarmed_size: (u32, u32),
+    robot: Option<Robot>,
+    snapshot_frame: Option<u64>,
+}
+
+/// The simulated participant.
+struct Robot {
+    rng: onset::rng::Rng,
+    /// (when to press, raw key)
+    pending: Vec<(Instant, String)>,
+}
+
+impl Robot {
+    fn respond(&mut self, rig: &Rig, r: &onset::run::StartedResponse, now: Instant) {
+        let roll = self.rng.below(100);
+        if roll < 5 || r.buttons.is_empty() {
+            return; // miss
+        }
+        let label = match &r.correct {
+            Some(c) if roll >= 15 => c.clone(),
+            _ => r.buttons[self.rng.below(r.buttons.len() as u64) as usize].clone(),
+        };
+        let Some(raw) = rig.buttons.iter().find(|(_, l)| **l == label).map(|(k, _)| k.clone()) else {
+            return;
+        };
+        let rt = (0.35 + self.rng.below(300) as f64 / 1000.0).min(r.window * 0.9);
+        self.pending.push((now + Duration::from_secs_f64(rt), raw));
+    }
+}
+
+struct TimingTest {
+    rig: Rig,
+    seconds: f64,
+    start: Option<f64>,
+    last: Option<f64>,
+    intervals: Vec<f64>,
+    /// (frame, time, interval, photodiode) for the frames.tsv log.
+    frames: Vec<(u64, f64, f64, bool)>,
+}
+
+impl App {
+    fn secs(&self, t: Instant) -> f64 {
+        t.saturating_duration_since(self.epoch).as_secs_f64()
+    }
+
+    fn fail(&mut self, el: &ActiveEventLoop, e: anyhow::Error) {
+        self.result = Some(Err(e));
+        el.exit();
+    }
+
+    fn open(&mut self, el: &ActiveEventLoop, mode: Mode) -> Result<Active> {
+        let rig = match &mode {
+            Mode::Run(s) => &s.rig,
+            Mode::TimingTest { rig, .. } => rig,
+        };
+        let monitor = pick_monitor(el, rig.display.monitor.as_ref())?;
+        // Always on top: a stimulus window must never be covered (macOS also
+        // refuses to draw to a covered window, which would stall the run).
+        let mut attrs = Window::default_attributes()
+            .with_title("Onset")
+            .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
+        if rig.display.fullscreen {
+            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(monitor.clone())));
+        } else {
+            let [w, h] = rig.display.window_size;
+            attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h));
+        }
+        let window = Arc::new(el.create_window(attrs)?);
+        if rig.display.hide_cursor {
+            window.set_cursor_visible(false);
+        }
+        window.focus_window();
+        #[cfg(target_os = "macos")]
+        macos::bring_to_front(&window);
+        let mut renderer = Renderer::new(window.clone(), Box::new(el.owned_display_handle()))?;
+        if rig.photodiode.enabled {
+            renderer.photodiode =
+                Some(PhotodiodePatch { corner: rig.photodiode.corner, size: rig.photodiode.size });
+        }
+        let monitor_hz =
+            monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()).map(|mhz| mhz as f64 / 1000.0);
+
+        let kind = match mode {
+            Mode::TimingTest { rig, seconds } => ActiveKind::TimingTest(TimingTest {
+                rig,
+                seconds,
+                start: None,
+                last: None,
+                intervals: Vec::new(),
+                frames: Vec::new(),
+            }),
+            Mode::Run(setup) => {
+                let setup = Box::new(setup);
+                renderer.preload_images(&setup.timeline.images)?;
+                let hz = setup.rig.display.expected_hz.or(monitor_hz).unwrap_or(60.0);
+
+                // Provenance for run.json.
+                let started_wall = chrono::Local::now();
+                let size = window.inner_size();
+                let header = serde_json::json!({
+                    "onset_version": env!("CARGO_PKG_VERSION"),
+                    "experiment_name": setup.exp.experiment.name,
+                    "task": setup.exp.experiment.task,
+                    "subject": setup.sub,
+                    "session": setup.ses,
+                    "run": setup.run,
+                    "experiment_file": absolute(&setup.exp_path),
+                    "rig_file": setup.rig_path.as_deref().map(absolute),
+                    "seed": setup.timeline.seed,
+                    "started": started_wall.to_rfc3339(),
+                    "os": format!("{} {}", std::env::consts::OS, std::env::consts::ARCH),
+                    "gpu": format!("{} ({:?}, {})", renderer.adapter_info.name, renderer.adapter_info.backend, renderer.adapter_info.driver),
+                    "surface_format": format!("{:?}", renderer.format()),
+                    "monitor": monitor.as_ref().and_then(|m| m.name()),
+                    "monitor_refresh_hz": monitor_hz,
+                    "window_pixels": [size.width, size.height],
+                    "scale_factor": window.scale_factor(),
+                    "fullscreen": setup.rig.display.fullscreen,
+                    "trigger": match setup.simulate_tr {
+                        Some(tr) => format!("simulated TR {tr}"),
+                        None => format!("{:?}", setup.rig.trigger.source).to_lowercase(),
+                    },
+                    "dummy_volumes": setup.exp.scanner.dummy_volumes,
+                    "tr": setup.exp.scanner.tr,
+                    "planned_end_s": setup.timeline.end,
+                    "trials": setup.timeline.trials.len(),
+                    "warnings": setup.timeline.warnings,
+                    "clock": "times in raw logs are seconds on a monotonic clock; t = time - t0_run_clock",
+                });
+                let (tx, handle) = output::spawn_writer(
+                    setup.paths.clone(),
+                    header,
+                    setup.timeline.columns.clone(),
+                    setup.exp.schedule.onset_column.clone(),
+                )?;
+                copy_provenance(&setup);
+                *self.writer.lock().unwrap() = Some((tx.clone(), handle));
+
+                if setup.rig.trigger.source == TriggerSource::Serial && setup.simulate_tr.is_none() {
+                    input::spawn_serial(
+                        setup.rig.trigger.port.as_deref().unwrap_or_default(),
+                        setup.rig.trigger.baud,
+                        self.raw_tx.clone(),
+                        self.stop.clone(),
+                    )?;
+                }
+
+                let mut run =
+                    Run::new(setup.exp, setup.timeline.clone(), hz, setup.rig.photodiode.flash_frames);
+                let scenes = run.all_scenes();
+                let robot = setup.robot.then(|| Robot {
+                    rng: onset::rng::Rng::new(setup.timeline.seed ^ 0x5eed),
+                    pending: Vec::new(),
+                });
+                ActiveKind::Run(Box::new(ActiveRun {
+                    run,
+                    setup,
+                    log: Some(tx),
+                    t0_sent: false,
+                    simulator_started: false,
+                    started_wall,
+                    last_status: Instant::now(),
+                    warned_hz: false,
+                    scenes,
+                    prewarmed_size: (0, 0),
+                    robot,
+                    snapshot_frame: None,
+                }))
+            }
+        };
+        Ok(Active { renderer, window, frame: 0, kind })
+    }
+
+    /// Map a raw key/character to a run input according to the rig.
+    fn classify(rig: &Rig, source: Source, raw: &str) -> (Option<Input>, &'static str, String) {
+        let trigger = match source {
+            Source::Simulated => true,
+            Source::Keyboard => rig.trigger.source == TriggerSource::Keyboard && raw == rig.trigger.key,
+            Source::Serial => raw == rig.trigger.serial_char,
+            Source::Robot => false,
+        };
+        if trigger {
+            return (Some(Input::Trigger), "trigger", "trigger".into());
+        }
+        match rig.button_for(raw) {
+            Some(label) => (Some(Input::Button(label.to_string())), "button", label.to_string()),
+            None => (None, "ignored", String::new()),
+        }
+    }
+
+    fn handle_raw(&mut self, raw: RawInput) {
+        let epoch = self.epoch;
+        let Some(active) = &mut self.state else { return };
+        let ActiveKind::Run(ar) = &mut active.kind else { return };
+        match raw {
+            RawInput::Error(e) => {
+                self.console.message(&format!("{} {e}", red("input error:")));
+            }
+            RawInput::Key { t, source, raw } => {
+                let time = t.saturating_duration_since(epoch).as_secs_f64();
+                let (input, kind, label) = Self::classify(&ar.setup.rig, source, &raw);
+                if let Some(input) = input {
+                    ar.run.input(input, time);
+                }
+                if let Some(log) = &ar.log {
+                    let _ = log.send(LogMsg::Input(output::InputRecord {
+                        time,
+                        source: source.as_str(),
+                        raw,
+                        kind,
+                        label,
+                    }));
+                }
+            }
+        }
+    }
+
+    fn operator(&mut self, input: Input, t: Instant) {
+        let time = self.secs(t);
+        let Some(active) = &mut self.state else { return };
+        match &mut active.kind {
+            ActiveKind::Run(ar) => {
+                if let Some(log) = &ar.log {
+                    let label = format!("{input:?}").to_lowercase();
+                    let _ = log.send(LogMsg::Input(output::InputRecord {
+                        time,
+                        source: "keyboard",
+                        raw: label.clone(),
+                        kind: "operator",
+                        label,
+                    }));
+                }
+                ar.run.input(input, time);
+            }
+            ActiveKind::TimingTest(tt) => {
+                if input == Input::Abort {
+                    tt.seconds = 0.0;
+                }
+            }
+        }
+    }
+
+    fn tick(&mut self, el: &ActiveEventLoop) {
+        while let Ok(raw) = self.raw_rx.try_recv() {
+            self.handle_raw(raw);
+        }
+        if self.interrupted.swap(false, Ordering::SeqCst) {
+            self.operator(Input::Abort, Instant::now());
+        }
+        // Simulated participant presses that are due.
+        let mut due = Vec::new();
+        if let Some(Active { kind: ActiveKind::Run(ar), .. }) = &mut self.state {
+            if let Some(robot) = &mut ar.robot {
+                let now = Instant::now();
+                robot.pending.retain(|(at, raw)| {
+                    if *at <= now {
+                        due.push(RawInput::Key { t: *at, source: Source::Robot, raw: raw.clone() });
+                        false
+                    } else {
+                        true
+                    }
+                });
+            }
+        }
+        for raw in due {
+            self.handle_raw(raw);
+        }
+
+        let epoch = self.epoch;
+        let Some(active) = &mut self.state else { return };
+
+        // Prepare all text before the run (and again if the window resized).
+        if let ActiveKind::Run(ar) = &mut active.kind {
+            if ar.prewarmed_size != active.renderer.size() && ar.run.phase != Phase::Running {
+                active.renderer.prewarm(&ar.scenes);
+                ar.prewarmed_size = active.renderer.size();
+            }
+        }
+
+        let Some(frame) = active.renderer.acquire() else {
+            let since = *self.stalled_since.get_or_insert_with(Instant::now);
+            // Minimized or hidden mid-session: put the window back.
+            let restore_due = self.last_restore.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
+            if since.elapsed() > Duration::from_millis(200) && restore_due {
+                self.last_restore = Some(Instant::now());
+                active.window.set_minimized(false);
+                active.window.focus_window();
+                #[cfg(target_os = "macos")]
+                macos::bring_to_front(&active.window);
+            }
+            if since.elapsed() > Duration::from_secs(1) && !self.stall_warned {
+                self.stall_warned = true;
+                #[cfg(target_os = "macos")]
+                if std::env::var_os("ONSET_DEBUG").is_some() {
+                    self.console.message(&macos::describe(&active.window));
+                }
+                self.console.message(&format!(
+                    "{} the display isn't accepting frames (window hidden, minimized, or on another Space?)",
+                    red("warning:")
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(1));
+            return;
+        };
+        if self.stalled_since.take().is_some() && self.stall_warned {
+            self.stall_warned = false;
+            self.console.message(&format!("{} display is updating again", green("✓")));
+        }
+        // The moment the display accepted a new frame: the previous one just flipped.
+        let now = Instant::now().saturating_duration_since(epoch).as_secs_f64();
+        let index = active.frame;
+        active.frame += 1;
+
+        match &mut active.kind {
+            ActiveKind::Run(ar) => {
+                let plan = ar.run.frame(index, now);
+                let photodiode = ar.setup.rig.photodiode.enabled.then_some(plan.photodiode);
+                // Debugging/documentation aid: save each event's first frame.
+                // (Slow: never set ONSET_SNAPSHOTS for a real session.)
+                if let Some(dir) = std::env::var_os("ONSET_SNAPSHOTS") {
+                    let scene = plan.scene.clone();
+                    let onset_frame = plan.photodiode && ar.snapshot_frame != Some(index.wrapping_sub(1));
+                    if plan.photodiode {
+                        ar.snapshot_frame = Some(index);
+                    }
+                    if let Some(name) = ar.run.status().event.filter(|_| onset_frame) {
+                        let path = PathBuf::from(dir).join(format!("frame{index:06}_{name}.png"));
+                        match active.renderer.snapshot(&scene, photodiode) {
+                            Ok(img) => {
+                                let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
+                                let _ = img.save(&path);
+                            }
+                            Err(e) => eprintln!("snapshot failed: {e:#}"),
+                        }
+                    }
+                    active.renderer.draw(frame, &scene, photodiode);
+                } else {
+                    active.renderer.draw(frame, plan.scene, photodiode);
+                }
+                let started = ar.run.take_started_responses();
+                if let Some(robot) = &mut ar.robot {
+                    for r in &started {
+                        robot.respond(&ar.setup.rig, r, Instant::now());
+                    }
+                }
+
+                // Start the fake scanner once we're waiting for it.
+                if ar.run.phase == Phase::Waiting && !ar.simulator_started {
+                    if let Some(tr) = ar.setup.simulate_tr {
+                        ar.simulator_started = true;
+                        input::spawn_simulated_scanner(
+                            tr,
+                            1.5,
+                            "sim".into(),
+                            self.raw_tx.clone(),
+                            self.stop.clone(),
+                        );
+                        self.console
+                            .message(&format!("{} fake scanner starts in 1.5 s (TR {tr} s)", dim("·")));
+                    }
+                }
+                if let (Some(t0), false) = (ar.run.t0, ar.t0_sent) {
+                    ar.t0_sent = true;
+                    if let Some(log) = &ar.log {
+                        let _ = log.send(LogMsg::T0(t0));
+                    }
+                    let hz = 1.0 / ar.run.period();
+                    self.console.message(&format!(
+                        "{} trigger received, run started · display {hz:.3} Hz",
+                        green("▶")
+                    ));
+                    if let Some(expected) = ar.setup.rig.display.expected_hz {
+                        if ((hz - expected) / expected).abs() > 0.01 && !ar.warned_hz {
+                            ar.warned_hz = true;
+                            self.console.message(&format!(
+                                "{} measured {hz:.2} Hz but the rig expects {expected} Hz",
+                                yellow("warning:")
+                            ));
+                        }
+                    }
+                }
+                if let Some(log) = &ar.log {
+                    for f in ar.run.take_frames() {
+                        let _ = log.send(LogMsg::Frame(f));
+                    }
+                    for r in ar.run.take_records() {
+                        let _ = log.send(LogMsg::Event(r));
+                    }
+                }
+                if ar.last_status.elapsed() > Duration::from_millis(250) {
+                    ar.last_status = Instant::now();
+                    self.console.update(&ar.run.status());
+                }
+                if let Phase::Done(reason) = ar.run.phase {
+                    let result = finish_run(ar, reason, &self.writer, &mut self.console);
+                    self.result = Some(result);
+                    el.exit();
+                }
+            }
+            ActiveKind::TimingTest(tt) => {
+                let start = *tt.start.get_or_insert(now);
+                if let Some(last) = tt.last {
+                    tt.intervals.push(now - last);
+                }
+                tt.last = Some(now);
+                let on = index % 2 == 0;
+                let interval = tt.last.map_or(0.0, |_| *tt.intervals.last().unwrap_or(&0.0));
+                tt.frames.push((index, now, interval, on && tt.rig.photodiode.enabled));
+                let scene = onset::scene::Scene {
+                    background: onset::color::Color::BLACK,
+                    items: vec![onset::scene::Item::Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 300.0,
+                        h: 300.0,
+                        color: if on { onset::color::Color::WHITE } else { onset::color::Color::BLACK },
+                    }],
+                };
+                let photodiode = tt.rig.photodiode.enabled.then_some(on);
+                active.renderer.draw(frame, &scene, photodiode);
+                if now - start >= tt.seconds {
+                    report_timing(&tt.intervals, tt.rig.display.expected_hz);
+                    match write_timing_log(&tt.rig, &tt.frames) {
+                        Ok(path) => println!("   log           {}", dim(&path.display().to_string())),
+                        Err(e) => println!("{} couldn't write the frame log: {e:#}", yellow("warning:")),
+                    }
+                    el.exit();
+                }
+            }
+        }
+    }
+}
+
+fn absolute(p: &Path) -> String {
+    std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()).display().to_string()
+}
+
+/// Keep exact copies of the files that defined this run next to its logs.
+fn copy_provenance(setup: &RunSetup) {
+    let copy = |from: &Path, suffix: &str| {
+        let _ = std::fs::copy(from, setup.paths.raw(suffix));
+    };
+    copy(&setup.exp_path, "experiment.toml");
+    if let Some(rig) = &setup.rig_path {
+        copy(rig, "rig.toml");
+    }
+    if let Some(file) = &setup.exp.schedule.file {
+        let src = setup.exp.resolve_path(file);
+        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("tsv");
+        copy(&src, &format!("schedule.{ext}"));
+    }
+}
+
+fn finish_run(
+    ar: &mut ActiveRun,
+    reason: EndReason,
+    writer: &WriterSlot,
+    console: &mut console::Status,
+) -> Result<()> {
+    let status = ar.run.status();
+    if let Some(log) = ar.log.take() {
+        for f in ar.run.take_frames() {
+            let _ = log.send(LogMsg::Frame(f));
+        }
+        for r in ar.run.take_records() {
+            let _ = log.send(LogMsg::Event(r));
+        }
+        let _ = log.send(LogMsg::Finish(serde_json::json!({
+            "end_reason": reason.as_str(),
+            "ended": chrono::Local::now().to_rfc3339(),
+            "duration_wall_s": (chrono::Local::now() - ar.started_wall).num_milliseconds() as f64 / 1000.0,
+            "measured_refresh_hz": 1.0 / ar.run.period(),
+            "missed_frames": ar.run.missed_frames,
+            "triggers": ar.run.triggers.len(),
+            "responses": status.responses,
+            "correct": status.correct,
+            "scored": status.scored,
+        })));
+    }
+    console.clear();
+    let Some((tx, handle)) = writer.lock().unwrap().take() else {
+        bail!("log writer already finished");
+    };
+    drop(tx);
+    let report = handle.join().map_err(|_| anyhow::anyhow!("log writer crashed"))??;
+
+    let headline = match reason {
+        EndReason::Completed => green("✓ run complete"),
+        EndReason::Aborted => yellow("■ run aborted (data saved)"),
+    };
+    println!("\n{headline}");
+    let t = status.t.unwrap_or(0.0).max(0.0);
+    println!("   duration      {}  ({} triggers)", fmt_duration(t), status.triggers);
+    let mf = ar.run.missed_frames;
+    let frames_line = format!("{mf} missed frames · {:.3} Hz", 1.0 / ar.run.period());
+    println!("   display       {}", if mf == 0 { green(&frames_line) } else { yellow(&frames_line) });
+    if status.scored > 0 {
+        println!(
+            "   accuracy      {}/{} ({:.0}%)",
+            status.correct,
+            status.scored,
+            100.0 * status.correct as f64 / status.scored as f64
+        );
+    } else if status.responses > 0 {
+        println!("   responses     {}", status.responses);
+    }
+    println!("   events.tsv    {} rows", report.events_written);
+    for f in &report.files {
+        println!("   {}", dim(&f.display().to_string()));
+    }
+    Ok(())
+}
+
+/// Save timing-test frames in the same format as a run's frames.tsv, so
+/// `tools/analyze_timing.py` can compare them with photodiode recordings.
+fn write_timing_log(rig: &Rig, frames: &[(u64, f64, f64, bool)]) -> Result<PathBuf> {
+    let dir = rig.output.dir.join("timing-tests");
+    std::fs::create_dir_all(&dir)?;
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let path = dir.join(format!("timingtest_{stamp}_frames.tsv"));
+    let mut out = String::from("frame\ttime\tt\tinterval_ms\tmissed\tphase\tevent\tphotodiode\n");
+    let t0 = frames.first().map_or(0.0, |f| f.1);
+    for (index, time, interval, on) in frames {
+        out.push_str(&format!(
+            "{index}\t{time:.6}\t{:.6}\t{:.3}\t0\ttiming-test\tn/a\t{}\n",
+            time - t0,
+            interval * 1000.0,
+            *on as u8
+        ));
+    }
+    std::fs::write(&path, out)?;
+    Ok(path)
+}
+
+fn report_timing(intervals: &[f64], expected: Option<f64>) {
+    if intervals.len() < 10 {
+        println!("{}", yellow("too few frames to measure"));
+        return;
+    }
+    let mut v: Vec<f64> = intervals.to_vec();
+    v.sort_by(f64::total_cmp);
+    let median = v[v.len() / 2];
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    let sd = (v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (v.len() - 1) as f64).sqrt();
+    let missed: u64 = intervals
+        .iter()
+        .filter(|&&i| i > 1.5 * median)
+        .map(|&i| ((i / median).round() as u64).saturating_sub(1))
+        .sum();
+    println!("   frames        {}", intervals.len() + 1);
+    println!("   refresh       {:.3} Hz (median interval {:.3} ms)", 1.0 / median, median * 1000.0);
+    println!(
+        "   jitter        mean {:.3} ms · SD {:.3} ms · min {:.3} · max {:.3}",
+        mean * 1000.0,
+        sd * 1000.0,
+        v[0] * 1000.0,
+        v[v.len() - 1] * 1000.0
+    );
+    let line = format!("{missed} missed frames");
+    println!("   dropped       {}", if missed == 0 { green(&line) } else { red(&line) });
+    if let Some(e) = expected {
+        if ((1.0 / median - e) / e).abs() > 0.01 {
+            println!("{} expected {e} Hz", yellow("warning:"));
+        }
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        if self.state.is_some() {
+            return;
+        }
+        let Some(mode) = self.mode.take() else { return };
+        match self.open(el, mode) {
+            Ok(active) => self.state = Some(active),
+            Err(e) => self.fail(el, e),
+        }
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        match event {
+            WindowEvent::CloseRequested => self.operator(Input::Abort, Instant::now()),
+            WindowEvent::Resized(size) => {
+                if let Some(a) = &mut self.state {
+                    let scale = a.window.scale_factor() as f32;
+                    a.renderer.resize(size.width, size.height, scale);
+                }
+            }
+            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                if let Some(a) = &mut self.state {
+                    let size = a.window.inner_size();
+                    a.renderer.resize(size.width, size.height, scale_factor as f32);
+                }
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
+                // Timestamp first, before doing anything else.
+                let t = Instant::now();
+                if event.state != ElementState::Pressed || event.repeat {
+                    return;
+                }
+                match &event.logical_key {
+                    Key::Named(NamedKey::Escape) => self.operator(Input::Abort, t),
+                    Key::Named(NamedKey::Space) | Key::Named(NamedKey::Enter) => {
+                        self.operator(Input::Continue, t)
+                    }
+                    Key::Character(c) => {
+                        let raw = RawInput::Key { t, source: Source::Keyboard, raw: c.to_string() };
+                        self.handle_raw(raw);
+                    }
+                    _ => {}
+                }
+                let done =
+                    matches!(&self.state, Some(Active { kind: ActiveKind::Run(ar), .. }) if ar.run.is_done());
+                if done {
+                    el.exit();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        if self.result.is_some() {
+            return;
+        }
+        self.tick(el);
+    }
+
+    fn exiting(&mut self, _el: &ActiveEventLoop) {
+        self.stop.store(true, Ordering::SeqCst);
+        // Window closed some other way: make sure logs are finished.
+        if let Some(Active { kind: ActiveKind::Run(ar), .. }) = &mut self.state {
+            if ar.log.is_some() {
+                ar.run.input(Input::Abort, self.epoch.elapsed().as_secs_f64());
+                let r = finish_run(ar, EndReason::Aborted, &self.writer, &mut self.console);
+                if self.result.is_none() {
+                    self.result = Some(r);
+                }
+            }
+        }
+    }
+}

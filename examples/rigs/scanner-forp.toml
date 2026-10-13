@@ -1,0 +1,35 @@
+# Scanner rig with a Current Designs fORP in USB keyboard mode (HID KEY 12345).
+# The fORP types "5" for every TR and 1-4 for the four buttons of one hand.
+# Run `onset displays` to find the projector and put its index or name below.
+
+[display]
+# monitor = 1             # or part of its name, e.g. "PROPixx"
+fullscreen = true
+expected_hz = 60
+hide_cursor = true
+
+[trigger]
+source = "keyboard"
+key = "5"
+
+# Serial mode instead (fORP "932" serial output, or an Arduino trigger box):
+# source = "serial"
+# port = "COM3"           # `onset ports` lists them
+# baud = 19200
+# serial_char = "5"
+
+[buttons]
+# raw key = label used in experiments
+"1" = "1"
+"2" = "2"
+"3" = "3"
+"4" = "4"
+
+[photodiode]
+enabled = true
+corner = "bottom-left"
+size = 40
+flash_frames = 3
+
+[output]
+dir = "data"

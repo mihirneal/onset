@@ -1,0 +1,50 @@
+# NSD resting-state run (Allen et al., 2022; runresting.m).
+#
+# 300 s, TR 1.6 s, 188 volumes. A white 0.5° fixation cross (~42 px at NSD's
+# 85 px/deg) on gray 127; no button task. This is the "instructed breath"
+# variant: the cross turns red from 12 to 16 s and the participant takes one
+# deep breath. For a plain rest run, delete the second schedule row.
+# (NSD also collected a Stanford Sleepiness Scale rating before and after each
+# run; do that verbally or with a separate short experiment.)
+
+[experiment]
+name = "NSD resting state"
+task = "rest"
+background = [127, 127, 127]
+baseline = "cross"
+font_size = 40
+instructions = """Please stay awake and keep your eyes on the cross, but otherwise rest.
+
+When the cross turns red, take one deep breath in, like a sigh."""
+waiting_text = "The scan will begin shortly."
+
+[scanner]
+tr = 1.6
+volumes = 188
+
+[stimuli.cross]
+type = "fixation"
+size = 42
+thickness = 4
+color = "white"
+
+[stimuli.cross_red]
+type = "fixation"
+size = 42
+thickness = 4
+color = [255, 0, 0]
+
+[trial]
+trial_type = "{cue}"
+
+[[trial.events]]
+name = "cue"
+stimulus = "{stimulus}"
+duration = "{duration}"
+
+[schedule]
+onset_column = "onset"
+rows = [
+  { onset = 0.0, stimulus = "cross", cue = "rest", duration = 12.0 },
+  { onset = 12.0, stimulus = "cross_red", cue = "breath", duration = 4.0 },
+]

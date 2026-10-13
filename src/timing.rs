@@ -3,14 +3,11 @@
 //! A display redraws at a fixed rate (e.g. 60 Hz), so a stimulus can only
 //! appear at the start of a frame. These helpers turn "show this 2.5 s after
 //! the first scanner trigger" into "show this on frame 150", and back.
-//!
-//! EXERCISE 1: replace each `todo!()` with a real implementation until
-//! `cargo test` passes. Don't change the function signatures or the tests.
 
 /// How long one frame lasts, in seconds.
 /// At 60 Hz that's 1/60 ≈ 0.01667 s.
 pub fn frame_duration(refresh_hz: f64) -> f64 {
-    todo!()
+    1.0 / refresh_hz
 }
 
 /// The frame a stimulus should appear on, given its onset in seconds after
@@ -18,12 +15,12 @@ pub fn frame_duration(refresh_hz: f64) -> f64 {
 ///
 /// Onsets that fall between two frames go to the *nearest* frame.
 pub fn onset_to_frame(onset_s: f64, refresh_hz: f64) -> u64 {
-    todo!()
+    (onset_s * refresh_hz).round() as u64
 }
 
 /// The time, in seconds after the trigger, at which `frame` starts.
 pub fn frame_to_onset(frame: u64, refresh_hz: f64) -> f64 {
-    todo!()
+    frame as f64 / refresh_hz
 }
 
 // Everything below only compiles when you run `cargo test`.

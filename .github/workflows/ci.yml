@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked
+      - name: Unit tests
+        run: cargo test --locked
+      - name: Clippy
+        run: cargo clippy --locked -- -D warnings
+      - name: Validate examples
+        run: |
+          for exp in examples/*/experiment.toml; do
+            ./target/release/onset validate "$exp" --rig examples/rigs/dev.toml
+          done
+      - name: Timing-analysis tests
+        if: hashFiles('tools/test_analyze_timing.py') != ''
+        run: |
+          python3 -m pip install --quiet numpy pandas pytest pyserial
+          python3 -m pytest -q tools

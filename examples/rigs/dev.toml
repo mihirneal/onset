@@ -1,0 +1,25 @@
+# Your desk: a window on the main screen, keyboard trigger "5", keys 1-4 as buttons.
+# Add --simulate to `onset run` to get fake triggers instead of pressing 5.
+
+[display]
+fullscreen = false
+window_size = [1280, 800]
+hide_cursor = false
+
+[trigger]
+source = "keyboard"
+key = "5"
+
+[buttons]
+"1" = "1"
+"2" = "2"
+"3" = "3"
+"4" = "4"
+
+[photodiode]
+enabled = true
+corner = "bottom-left"
+size = 40
+
+[output]
+dir = "data"
