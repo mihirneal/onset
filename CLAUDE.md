@@ -2,51 +2,55 @@
 
 Open-source stimulus presentation software in Rust, meant to replace E-Prime for fMRI experiments at a BCM lab. The goal is a real, production-quality tool that is faster, nicer looking and more fun to run than E-Prime. The lab does not have to adopt it.
 
-## The main point is learning Rust
+**macOS only.** The stimulus computer at the scanner will be a Mac. Don't add Windows or Linux code, docs, or CI.
 
-The person working on this is learning Rust through this project. **They write the code.** Claude explains concepts, writes exercises and reviews their solutions.
+## How we work
 
-- Exercises use tests as the spec: Claude writes function signatures with `todo!()` bodies plus tests, and the learner fills in the bodies. Don't fill in `todo!()` bodies or write feature code unless they ask for it directly.
-- Before handing out an exercise, check it in a scratch copy: a correct solution should pass and a common beginner mistake should fail.
-- After each exercise, review the code, show what more idiomatic Rust would look like, and have them run `cargo clippy`.
-- The learner is new to Rust and knows Python best, so explain Rust ideas by comparing them to Python. They know the fMRI side well (TRs, triggers, onsets, BIDS), so there's no need to explain that.
-- Don't use agents or workflows to build Onset itself.
+Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust beginner who knows Python best and knows the fMRI side well (TRs, triggers, onsets, BIDS):
 
-## Curriculum
+- When a change uses a Rust idea worth knowing, explain it briefly by comparing it to Python. Don't explain the fMRI side.
+- If they ask for an exercise instead, use the "tests as spec" style: signatures with `todo!()` plus tests, checked in a scratch copy first (a correct solution passes, a common beginner mistake fails), then a review and `cargo clippy`. Exercise 1 (`src/timing.rs`) is theirs. Keep their solution as written.
+- Work happens on more than one Mac, so keep this file current when decisions change.
 
-| # | Onset piece | Rust taught | Status |
-|---|---|---|---|
-| 1 | Seconds ↔ frames conversion (`src/timing.rs`) | functions, number types, `as` casts, tests | done |
-| 2 | Rejecting bad inputs (negative onsets, 0 Hz) | `Result`/`Option` instead of exceptions | |
-| 3 | Reading the experiment's TOML file | structs, enums, serde | |
-| 4 | Trial schedule from a TSV | `Vec`, iterators, ownership and borrowing | |
-| 5 | Writing BIDS events.tsv | traits, file I/O | |
-| 6 | Fake scanner and serial trigger | threads, channels | |
-| 7 | First window, photodiode square | winit and wgpu | |
-| 8 | Frame loop: a checkerboard running at the desk | putting it all together | |
-| 9 | The lab's real paradigm | — | |
+## Layout
 
-Update the Status column as exercises are finished, so it stays in sync across machines.
+| Path | What it is |
+|---|---|
+| `src/experiment.rs`, `src/rig.rs` | TOML formats: experiment (portable) and rig (display, trigger, buttons, photodiode) |
+| `src/schedule.rs` | Compiles an experiment + schedule TSV into absolute planned onsets; validation |
+| `src/run.rs` | The run state machine: picks what each frame shows, handles triggers/responses, produces records. No GPU code, unit-tested with synthetic frame times |
+| `src/render.rs`, `src/shaders/` | wgpu renderer: shapes, circles, radial checkerboard, images, text (glyphon), photodiode patch, offscreen snapshots |
+| `src/output.rs` | Writer thread: BIDS events.tsv/json, raw frames/inputs/eventlog TSVs, run.json |
+| `src/input.rs` | Serial and simulated-scanner threads; every input timestamped on arrival |
+| `src/main.rs`, `src/console.rs`, `src/macos.rs` | CLI, window and frame loop, operator status line, macOS priority and window placement |
+| `examples/` | flanker, checkerboard localizer, NSD core run, NSD resting state, rig files |
+| `hardware/`, `tools/`, `docs/VALIDATION.md` | Photodiode/Arduino timing kit and analysis scripts (not yet tested on hardware) |
+| `docs/SCHEMA.md`, `docs/TIMING.md` | Format reference and timing model; update them when behavior changes |
 
-Exercise 1 still to do: `cargo init --lib`, put `pub mod timing;` in `src/lib.rs`, replace the three `todo!()`s until `cargo test` passes, then `cargo clippy` and a review. The key lesson is the round-trip test: `as u64` truncates, so the answer has to round.
+## Checks
+
+- `cargo test`, `cargo clippy -- -D warnings`, `onset validate` on every example, and `python -m pytest tools` (in a venv). CI on GitHub runs the same on macOS.
+- End-to-end without hardware: `onset run <exp> --rig examples/rigs/dev.toml --simulate --robot --sub 99 --out <scratch dir>`. For a quick check, copy the experiment with the `instructions` removed and fewer volumes. `ONSET_SNAPSHOTS=<dir>` saves each event's first frame as a PNG; it disturbs timing, so use it only for checking visuals.
+- Test runs open windows on the owner's screen. Keep them short, and ask before anything fullscreen.
 
 ## Design decisions
 
-- **Rendering:** winit + wgpu, vsync on, log every frame's present time, detect dropped frames.
-- **Scanner sync:** wait for the MRI trigger (serial through the `serialport` crate, or a keypress if the trigger box acts as a keyboard). Timestamp every event relative to the first TR.
-- **Experiments** are defined in TOML, not code.
-- **Output:** BIDS `events.tsv` plus a raw timing log.
-- **Timing check:** a photodiode on a flashing square in a screen corner, with an Arduino timestamping the photodiode and the trigger on one clock. Compare against E-Prime on the same paradigm.
-- **MVP:** port one real lab paradigm end to end before building any editor UI.
+- **Rendering:** winit + wgpu, Fifo vsync with one frame in flight. The flip time of frame k is taken as the moment frame k+1 is acquired. Every frame and any dropped frames are logged.
+- **Scheduling:** onsets are absolute times after the first kept trigger (`dummy_volumes` are skipped), snapped to the nearest refresh. Durations are never added up at runtime.
+- **Scanner sync:** keyboard trigger (a fORP types "5"), serial trigger box, or a simulated scanner. The window must keep keyboard focus for keyboard triggers; Onset warns loudly if it loses focus.
+- **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
+- **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
+- **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock. Compare against E-Prime on the same paradigm.
+- **NSD:** stimuli may not be redistributed. NSD images live outside the repo (`~/nsd/`), and `.gitignore` blocks `*_nsd*.png`. Never commit them.
 
-## Open questions
+## Status and open questions
 
-- Which paradigm to port first (an E-Prime `.es3`/`.ebs3` file or a written description would be ideal). Placeholder examples until then: a checkerboard block localizer and a flanker task with jittered timing.
-- Which trigger hardware the scanner uses (fORP / Current Designs / Arduino / other). The rig config should support fORP in keyboard mode, a serial trigger box, and a simulated scanner.
+- v0.1 runs end to end on the dev Mac in a window with a simulated scanner and participant. Not yet done: fullscreen, a second display or projector, a full-length run, real fORP/trigger/serial hardware, and the photodiode rig.
+- Needed from the owner: the scanner display (model, resolution, refresh rate, viewing distance) to convert NSD's degrees to pixels; the trigger and button hardware and what keys/bytes they send.
+- Not supported yet: audio, video, scripting/staircases, eye tracking, pRF/fLoc-style animated or masked stimuli, editor UI.
 
 ## Setup on a new Mac
 
-Work happens on more than one Mac, and only this repo is shared between them.
-
 - Install Rust: `curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
 - If links fail with a macOS SDK error: the installed linker in Apple's Command Line Tools can't read the macOS 27.0 SDK. Pin builds to an installed older SDK (26.5 worked) by setting `SDKROOT` under `[env]` in `~/.cargo/config.toml`. Keep that file out of the repo, because the SDK path is machine-specific. Remove the pin once a Command Line Tools update fixes the mismatch.
+- NSD images: `aws s3 sync s3://natural-scenes-dataset/nsddata/stimuli/nsd/shared1000/ ~/nsd/shared1000/ --no-sign-request` (after accepting the NSD terms).

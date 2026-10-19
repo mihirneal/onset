@@ -85,7 +85,7 @@ pub struct Trigger {
     /// Keyboard mode: the key the trigger box types (fORP default "5").
     #[serde(default = "default_trigger_key")]
     pub key: String,
-    /// Serial mode: port path, e.g. "COM3" or "/dev/tty.usbserial-1410".
+    /// Serial mode: port path, e.g. "/dev/cu.usbserial-1410" (see `onset ports`).
     pub port: Option<String>,
     #[serde(default = "default_baud")]
     pub baud: u32,

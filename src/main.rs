@@ -1,9 +1,10 @@
 //! The `onset` command-line program.
 
 mod console;
-#[cfg(target_os = "macos")]
 mod macos;
-mod priority;
+
+#[cfg(not(target_os = "macos"))]
+compile_error!("Onset supports macOS only.");
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
@@ -467,7 +468,7 @@ fn present(mode: Mode) -> Result<()> {
 
     let event_loop = EventLoop::new()?;
     event_loop.set_control_flow(ControlFlow::Poll);
-    priority::raise();
+    macos::raise_priority();
     let (raw_tx, raw_rx) = channel();
     let mut app = App {
         mode: Some(mode),
@@ -602,7 +603,6 @@ impl App {
             window.set_cursor_visible(false);
         }
         window.focus_window();
-        #[cfg(target_os = "macos")]
         macos::bring_to_front(&window);
         let mut renderer = Renderer::new(window.clone(), Box::new(el.owned_display_handle()))?;
         if rig.photodiode.enabled {
@@ -772,6 +772,37 @@ impl App {
         }
     }
 
+    /// Keyboard triggers and buttons only reach a focused window, so losing
+    /// focus mid-session is the worst silent failure: warn loudly, log it,
+    /// and try to take focus back.
+    fn focus_changed(&mut self, focused: bool) {
+        let time = self.secs(Instant::now());
+        let Some(Active { kind: ActiveKind::Run(ar), window, .. }) = &mut self.state else { return };
+        if matches!(ar.run.phase, Phase::Done(_)) {
+            return;
+        }
+        if let Some(log) = &ar.log {
+            let label = if focused { "focus-gained" } else { "focus-lost" };
+            let _ = log.send(LogMsg::Input(output::InputRecord {
+                time,
+                source: "window",
+                raw: label.into(),
+                kind: "operator",
+                label: label.into(),
+            }));
+        }
+        if focused {
+            self.console.message(&format!("{} Onset window has keyboard focus again", green("✓")));
+        } else {
+            self.console.message(&format!(
+                "{} Onset LOST KEYBOARD FOCUS: keyboard triggers and button presses won't arrive until you click the stimulus window",
+                red("WARNING:")
+            ));
+            window.focus_window();
+            macos::bring_to_front(window);
+        }
+    }
+
     fn tick(&mut self, el: &ActiveEventLoop) {
         while let Ok(raw) = self.raw_rx.try_recv() {
             self.handle_raw(raw);
@@ -817,12 +848,10 @@ impl App {
                 self.last_restore = Some(Instant::now());
                 active.window.set_minimized(false);
                 active.window.focus_window();
-                #[cfg(target_os = "macos")]
                 macos::bring_to_front(&active.window);
             }
             if since.elapsed() > Duration::from_secs(1) && !self.stall_warned {
                 self.stall_warned = true;
-                #[cfg(target_os = "macos")]
                 if std::env::var_os("ONSET_DEBUG").is_some() {
                     self.console.message(&macos::describe(&active.window));
                 }
@@ -1112,6 +1141,7 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.operator(Input::Abort, Instant::now()),
+            WindowEvent::Focused(focused) => self.focus_changed(focused),
             WindowEvent::Resized(size) => {
                 if let Some(a) = &mut self.state {
                     let scale = a.window.scale_factor() as f32;

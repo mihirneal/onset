@@ -1,4 +1,4 @@
-//! macOS window placement fixes.
+//! macOS specifics: thread priority and window placement.
 //!
 //! A program started from a terminal isn't always the active app, and its
 //! window can open behind other windows or on another desktop (Space). macOS
@@ -8,6 +8,18 @@ use objc2::msg_send;
 use objc2::runtime::AnyObject;
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::Window;
+
+/// Run the calling (render) thread at the QoS class macOS uses for UI
+/// animation, so it's scheduled promptly. Best effort.
+pub fn raise_priority() {
+    unsafe extern "C" {
+        fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: i32) -> i32;
+    }
+    const QOS_CLASS_USER_INTERACTIVE: u32 = 0x21;
+    unsafe {
+        pthread_set_qos_class_self_np(QOS_CLASS_USER_INTERACTIVE, 0);
+    }
+}
 
 /// Show `window` on the current Space, in front of everything, now.
 pub fn bring_to_front(window: &Window) {

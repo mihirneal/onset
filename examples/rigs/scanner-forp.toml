@@ -14,7 +14,7 @@ key = "5"
 
 # Serial mode instead (fORP "932" serial output, or an Arduino trigger box):
 # source = "serial"
-# port = "COM3"           # `onset ports` lists them
+# port = "/dev/cu.usbserial-1410"   # `onset ports` lists them
 # baud = 19200
 # serial_char = "5"
 

@@ -8,7 +8,7 @@ Frame-accurate stimulus presentation for fMRI, written in Rust. An open-source r
 - **BIDS output.** `sub-01_task-x_run-01_events.tsv` + `events.json` are ready for fMRIPrep, nilearn, FSL, or SPM.
 - **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset; there's a `timing-test` command and an Arduino rig for measuring real display latency.
 
-## Quick start (macOS)
+## Quick start
 
 ```bash
 # install Rust once: https://rustup.rs
@@ -128,7 +128,7 @@ See [docs/TIMING.md](docs/TIMING.md). In short, rendering uses vsync with one fr
 
 ## Status
 
-v0.1, under active development. macOS is the tested platform; Windows and Linux compile but are untested. Not yet supported: audio, video, scripting/staircases, eye tracking, and a graphical editor.
+v0.1, under active development. macOS only (by design). Not yet supported: audio, video, scripting/staircases, eye tracking, and a graphical editor.
 
 ## License
 

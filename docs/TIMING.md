@@ -2,7 +2,7 @@
 
 ## Clock and t = 0
 
-All timestamps come from one monotonic clock (`std::time::Instant`: `mach_absolute_time` on macOS, QPC on Windows). The run starts at **t = 0, the time the first kept trigger arrived**. With `dummy_volumes = N`, the first N triggers are logged and ignored. BIDS onsets are relative to the first volume you keep, so set `dummy_volumes` to match the volumes you discard. Every trigger is logged in `inputs.tsv`, so you can re-align afterwards if needed.
+All timestamps come from one monotonic clock (`std::time::Instant`, which is `mach_absolute_time` on macOS). The run starts at **t = 0, the time the first kept trigger arrived**. With `dummy_volumes = N`, the first N triggers are logged and ignored. BIDS onsets are relative to the first volume you keep, so set `dummy_volumes` to match the volumes you discard. Every trigger is logged in `inputs.tsv`, so you can re-align afterwards if needed.
 
 ## Absolute scheduling
 
@@ -32,7 +32,7 @@ The **refresh period** is measured (median frame interval) during the instructio
 
 ## Inputs
 
-- **Serial** (trigger boxes, button boxes, Arduino): a dedicated thread blocks on the port and timestamps each byte the moment `read()` returns, at sub-millisecond precision. For FTDI adapters on Windows, set the latency timer to 1 ms in Device Manager (the default is 16 ms).
+- **Serial** (trigger boxes, button boxes, Arduino): a dedicated thread blocks on the port and timestamps each byte the moment `read()` returns, at sub-millisecond precision.
 - **Keyboard** (fORP in keyboard mode): winit delivers key events on the main thread between frames. They're timestamped as soon as they're received, so precision is about one frame, depending on when the OS delivers the event.
 - **Simulated scanner**: a thread that sleeps, then spins, until each multiple of the TR.
 
@@ -44,7 +44,7 @@ Disk writes (`frames.tsv`, `inputs.tsv`, `eventlog.tsv`, `run.json`) and termina
 
 ## Process priority
 
-On macOS the render thread runs at the `USER_INTERACTIVE` QoS class. On Windows the process runs at `HIGH_PRIORITY_CLASS` with 1 ms timer resolution. Use **fullscreen** at the scanner: on macOS a fullscreen window bypasses most compositor work, and in testing, windowed mode on a busy desktop dropped about one frame every 10–20 s.
+The render thread runs at macOS's `USER_INTERACTIVE` QoS class. Use **fullscreen** at the scanner: on macOS a fullscreen window bypasses most compositor work, and in testing, windowed mode on a busy desktop dropped about one frame every 10–20 s.
 
 ## Checking a setup
 
