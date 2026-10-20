@@ -79,7 +79,8 @@ enum Cmd {
     Inputs {
         #[arg(long)]
         rig: Option<PathBuf>,
-        /// Stop after this many seconds (default: until Ctrl-C).
+        /// Stop after this many seconds. Default: when a scan that sent
+        /// pulses has stopped (no pulse for 2.5 TRs, at least 5 s), or Ctrl-C.
         #[arg(long)]
         seconds: Option<f64>,
     },
@@ -340,9 +341,27 @@ fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
     let start = Instant::now();
     let mut triggers = 0u32;
     let mut last_trigger: Option<Instant> = None;
+    let mut gaps: Vec<f64> = Vec::new();
     loop {
         if seconds.is_some_and(|s| start.elapsed().as_secs_f64() >= s) {
             break;
+        }
+        // Without --seconds, stop once the scan has ended, so the scanner's
+        // last pulses are never left to type into whatever app is in front.
+        if seconds.is_none()
+            && let Some(last) = last_trigger
+            && triggers >= 2
+        {
+            let mut sorted = gaps.clone();
+            sorted.sort_by(f64::total_cmp);
+            let tr = sorted[sorted.len() / 2];
+            let quiet = (2.5 * tr).max(5.0);
+            if last.elapsed().as_secs_f64() >= quiet {
+                println!(
+                    "The scanner stopped ({triggers} pulses, TR {tr:.3} s; no pulse for {quiet:.1} s)."
+                );
+                break;
+            }
         }
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(RawInput::Key { t, source, raw }) => {
@@ -354,6 +373,9 @@ fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
                         let gap = last_trigger.map_or(String::new(), |p| {
                             format!("  (+{:.3} s)", t.saturating_duration_since(p).as_secs_f64())
                         });
+                        if let Some(p) = last_trigger {
+                            gaps.push(t.saturating_duration_since(p).as_secs_f64());
+                        }
                         last_trigger = Some(t);
                         green(&format!("trigger {triggers}{gap}"))
                     }
