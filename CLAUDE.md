@@ -65,6 +65,17 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Trigger wiring:** the scanner's trigger arrives on an orange fiber with a blue connector, plugged into the fORP's fiber input. **The connector is loose and held with tape**: not fully seated, no pulses got through, and one run dropped 16 pulses. Check the fORP's trigger LED (bottom of the right-hand pair) blinks before every run until it's fixed.
 - **The scanner laptop sleeps its displays after 2 idle minutes**, which blacks out the BOLDscreen. Onset now runs `caffeinate` for as long as it's open.
 
+- **Between runs the fORP is just a keyboard.** Onset only filters its keystrokes while it's open, so pulses or presses with no Onset running type into the app in front (seen 2026-10-20 when a trigger test outlasted a listener). `onset inputs` now runs until the scan stops. Possible later: an optional background helper that filters between runs.
+- **Proposed 3T protocol for real runs** (Claude's proposal, 2026-10-20; build it on the console and check next session):
+  - `cmrr_mbep2d_bold` (CMRR multiband) if installed, otherwise `ep2d_bold` with GRAPPA 2 (about 2.5 mm).
+  - 2.0 mm isotropic, about 72 axial slices (whole brain incl. cerebellum), MB 4, no GRAPPA.
+  - TR 1600 ms, TE 30 ms, flip 70°, phase encoding A≫P, partial Fourier 7/8.
+  - 188 volumes, matching the image experiment's 300.8 s run, so the experiment file needs no 3T variant.
+  - MoCo off (motion correction offline, e.g. fMRIPrep).
+  - Spin-echo field map pair (A≫P / P≫A, 3 volumes each, same geometry).
+  - T1 MPRAGE 1 mm once per session.
+  - To check on the console: is the CMRR sequence installed; which head coil (MB 4 wants ≥ 32 channels, else MB 3); does TR 1.6 s fit 72 slices (if not, drop 2–4 slices or go to 2.2 mm); and does it send one trigger per volume (`onset inputs`).
+
 ## Status and open questions
 
 - v0.1 runs end to end on the dev Mac in a window with a simulated scanner and participant. Not yet run at the scanner: v0.1 itself. (On 2026-10-20 a separate checkerboard program on branch `scanner-day-2026-10-20` ran there with real triggers.) Not yet done: a full-length v0.1 run at the scanner, the button pads with a person pressing them, and the photodiode rig.
