@@ -98,7 +98,7 @@ impl Status {
     pub fn update(&mut self, s: &RunStatus) {
         let line = match s.phase {
             Phase::Instructions => {
-                format!("{} instructions on screen · press Space when the participant is ready", cyan("●"))
+                format!("{} instructions on screen · waiting for the scanner (the first pulse starts the run)", cyan("●"))
             }
             Phase::Waiting => format!(
                 "{} waiting for scanner trigger{}",

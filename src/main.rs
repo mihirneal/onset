@@ -514,7 +514,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         paths.events_tsv().display()
     );
     println!("   trigger: {trigger_desc}");
-    println!("   {}", dim("Esc aborts (data is saved) · Space continues past instructions"));
+    println!("   {}", dim("the first scanner pulse starts the run · Ctrl-C here or Esc on the stimulus window aborts (data is saved)"));
 
     let setup = RunSetup {
         exp,
