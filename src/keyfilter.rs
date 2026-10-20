@@ -129,11 +129,7 @@ pub fn start() -> bool {
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         static kCFRunLoopCommonModes: CFStringRef;
-        fn CFMachPortCreateRunLoopSource(
-            alloc: *const c_void,
-            port: CFMachPortRef,
-            order: isize,
-        ) -> CFRunLoopSourceRef;
+        fn CFMachPortCreateRunLoopSource(alloc: *const c_void, port: CFMachPortRef, order: isize) -> CFRunLoopSourceRef;
         fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
         fn CFRunLoopRun();
@@ -187,14 +183,7 @@ pub fn start() -> bool {
         // SAFETY: standard event-tap setup; every pointer is either one macOS
         // just returned (checked for null) or a constant it defines.
         unsafe {
-            let tap = CGEventTapCreate(
-                SESSION_TAP,
-                HEAD_INSERT,
-                DEFAULT_OPTIONS,
-                mask,
-                callback,
-                std::ptr::null_mut(),
-            );
+            let tap = CGEventTapCreate(SESSION_TAP, HEAD_INSERT, DEFAULT_OPTIONS, mask, callback, std::ptr::null_mut());
             if tap.is_null() {
                 let _ = ready_tx.send(false);
                 return;

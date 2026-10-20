@@ -107,12 +107,7 @@ pub struct HidReader {
     pub exclusive: bool,
 }
 
-pub fn spawn_hid(
-    vendor: u16,
-    product: u16,
-    tx: Sender<RawInput>,
-    stop: Arc<AtomicBool>,
-) -> Result<HidReader> {
+pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<AtomicBool>) -> Result<HidReader> {
     // Everything happens on the reader thread, including starting the HID
     // library: on macOS that briefly runs the calling thread's event loop,
     // which would re-enter the window system if done on the main thread.
@@ -175,9 +170,7 @@ fn open_hid(vendor: u16, product: u16) -> Result<hidapi::HidDevice> {
         .iter()
         .find(|d| d.usage_page() == 1 && d.usage() == 6)
         .or_else(|| matching.first())
-        .with_context(|| {
-        format!("no USB device {vendor:04x}:{product:04x} connected (`onset ports` lists them)")
-    })?;
+        .with_context(|| format!("no USB device {vendor:04x}:{product:04x} connected (`onset ports` lists them)"))?;
     let open = |exclusive: bool| {
         api.set_open_exclusive(exclusive);
         api.open_path(info.path())
