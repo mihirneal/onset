@@ -10,7 +10,8 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 
 - When a change uses a Rust idea worth knowing, explain it briefly by comparing it to Python. Don't explain the fMRI side.
 - If they ask for an exercise instead, use the "tests as spec" style: signatures with `todo!()` plus tests, checked in a scratch copy first (a correct solution passes, a common beginner mistake fails), then a review and `cargo clippy`. Exercise 1 (`src/timing.rs`) is theirs. Keep their solution as written.
-- Work happens on more than one Mac, so keep this file current when decisions change.
+- Work happens on more than one Mac, so keep this file current when decisions change. Pull before starting: on 2026-10-20 the scanner laptop hadn't pulled v0.1 and a whole session rebuilt pieces of it from the old exercise code (branch `scanner-day-2026-10-20`).
+- Claude has full control over git for this repo: commit, create branches, push, open and merge PRs without asking.
 
 ## Layout
 
@@ -37,16 +38,29 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 
 - **Rendering:** winit + wgpu, Fifo vsync with one frame in flight. The flip time of frame k is taken as the moment frame k+1 is acquired. Every frame and any dropped frames are logged.
 - **Scheduling:** onsets are absolute times after the first kept trigger (`dummy_volumes` are skipped), snapped to the nearest refresh. Durations are never added up at runtime.
-- **Scanner sync:** keyboard trigger (a fORP types "5"), serial trigger box, or a simulated scanner. The window must keep keyboard focus for keyboard triggers; Onset warns loudly if it loses focus.
+- **Scanner sync:** keyboard trigger (the CAMRI fORP types "t" in its BYGRT mode, "5" in 12345 mode), serial trigger box, or a simulated scanner. The window must keep keyboard focus for keyboard triggers; Onset warns loudly if it loses focus.
 - **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
 - **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock. Compare against E-Prime on the same paradigm.
 - **NSD:** stimuli may not be redistributed. NSD images live outside the repo (`~/nsd/`), and `.gitignore` blocks `*_nsd*.png`. Never commit them.
 
+## The scanner rig (CAMRI, confirmed 2026-10-20)
+
+- **Scanner:** Siemens MAGNETOM Prisma at BCM's Core for Advanced MRI (CAMRI).
+- **Display:** BOLDscreen32, 1920×1080 at 120 Hz. Connect it as a separate display, not mirrored: mirroring rendered at the laptop's 16:10 and scaled it onto the 16:9 panel at the laptop's 60 Hz. Video path: Mac → USB-C-to-DVI adapter → Gefen DVI KVM in the control room → BOLDscreen; the control-room "SCANNER VIEW" monitor shows what the participant sees. Rig file: `examples/rigs/scanner-forp.toml`.
+- **Trigger:** Current Designs fORP 932 (USB 0x181b:0x0008, an HID keyboard + mouse + joystick, no serial port) in "HID KEY BYGRT" mode: one `t` per volume, buttons `b y g r`. Its USB-A cable is bundled with the Gefen KVM cable; a laptop needs a USB-C-to-A adapter. macOS shows the Keyboard Setup Assistant the first time; close it.
+- **Trigger behaviour:** measured TR 2.8 s → 2.7997–2.8001 s, TR 1.5 s → 1.4991–1.4999 s, SD about 5 ms (keyboard and event-loop delay, not the scanner). Dummy volumes send no pulse, so the first pulse is the first saved volume. The localizer sends no pulses.
+- **Trigger wiring:** the scanner's trigger arrives on an orange fiber with a blue connector, plugged into the fORP's fiber input. **The connector is loose and held with tape**: not fully seated, no pulses got through, and one run dropped 16 pulses. Check the fORP's trigger LED (bottom of the right-hand pair) blinks before every run until it's fixed.
+- **The scanner laptop sleeps its displays after 2 idle minutes**, which blacks out the BOLDscreen. Onset now runs `caffeinate` for as long as it's open.
+
 ## Status and open questions
 
-- v0.1 runs end to end on the dev Mac in a window with a simulated scanner and participant. Not yet done: fullscreen, a second display or projector, a full-length run, real fORP/trigger/serial hardware, and the photodiode rig.
-- Needed from the owner: the scanner display (model, resolution, refresh rate, viewing distance) to convert NSD's degrees to pixels; the trigger and button hardware and what keys/bytes they send.
+- v0.1 runs end to end on the dev Mac in a window with a simulated scanner and participant. Not yet run at the scanner: v0.1 itself. (On 2026-10-20 a separate checkerboard program on branch `scanner-day-2026-10-20` ran there with real triggers.) Not yet done: a full-length v0.1 run at the scanner, the button pads with a person pressing them, and the photodiode rig.
+- Fullscreen is now a borderless window covering the chosen display (`macos::cover_screen`), because macOS fullscreen moved the window off the BOLDscreen at the scanner.
+- **Frame timing at the BOLDscreen:** taking frame k's flip time as frame k+1's acquire time (`docs/TIMING.md`) is unreliable there. The compositor sometimes hands back buffers at uneven times (4.5 ms, 12 ms, ... pairs that add to two refreshes), so the "interval > 1.5 periods" rule logs drops that didn't happen and onsets jitter by up to a frame. The fix is proven on the `scanner-day-2026-10-20` branch: present through our own Metal command buffer and read each frame's real on-screen time from `MTLDrawable.presentedTime` (`src/present.rs`, `src/hostclock.rs`), with a frame planner that never lets CPU jitter skip frames (`src/planner.rs`, tested in `tests/planner_sim.rs`). Port it into `render.rs`/`run.rs`.
+- **Run ends should follow the scanner:** a run that ends before the scan leaves the last volumes without a stimulus, and a scan that outlasts the run can start the next run with its last pulses (both happened at the scanner). The branch's `PulseWatch` (`src/scanner.rs`) holds the final screen until no pulse for max(5 s, 2.5 TR) and ignores pulses from a scan already under way. Port it into `run.rs`.
+- **Unexplained drops:** about one real dropped frame every 208 frames (1.73 s) on the scanner laptop at 120 Hz, confirmed by Metal's own timestamps, with both timing methods. Cause unknown.
+- Needed from the owner: the viewing distance to the BOLDscreen (to convert NSD's degrees to pixels), and which finger each fORP button color is.
 - Not supported yet: audio, video, scripting/staircases, eye tracking, pRF/fLoc-style animated or masked stimuli, editor UI.
 
 ## Setup on a new Mac
