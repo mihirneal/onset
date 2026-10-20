@@ -829,10 +829,10 @@ mod tests {
 
     #[test]
     fn the_first_trigger_starts_the_run_from_the_instructions() {
-        let mut e = exp();
+        let mut e = experiment();
         e.experiment.instructions = Some("Keep your eyes on the dot.".into());
-        let tl = schedule::compile(&e, 1).unwrap();
-        let mut run = Run::new(&e, tl, 60.0, 3);
+        let tl = compile(&e, 1, HZ).unwrap();
+        let mut run = Run::new(&e, tl, HZ, 3);
         assert_eq!(run.phase, Phase::Instructions);
         run.input(Input::Trigger, 1.0);
         assert_eq!(run.phase, Phase::Running);
