@@ -18,8 +18,16 @@ expected_hz = 120
 hide_cursor = true
 
 [trigger]
-source = "keyboard"
+# Read the fORP directly over USB: triggers and buttons arrive whichever
+# window has focus, timestamped on arrival. Needs macOS's Input Monitoring
+# permission for the terminal app, once. `onset inputs --rig <this file>`
+# shows every pulse and press as it arrives.
+source = "hid"
+device = "181b:0008"   # Current Designs fORP 932 (`onset ports` lists USB devices)
 key = "t"
+# Or through the focused window instead (no permission needed, but the
+# stimulus window must keep keyboard focus):
+# source = "keyboard"
 
 [buttons]
 # raw key = label used in experiments. Two pads, two buttons each, checked by
