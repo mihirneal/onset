@@ -1,6 +1,12 @@
 # Onset
 
-Open-source stimulus presentation software in Rust, meant to replace E-Prime for fMRI experiments at a BCM lab. The goal is a real, production-quality tool that is faster, nicer looking and more fun to run than E-Prime. The lab does not have to adopt it.
+General-purpose, open-source stimulus presentation software in Rust: a modern replacement for E-Prime that is leaner, faster and better. A real, production-quality tool for anyone running experiments (fMRI first), not a one-lab project. A BCM lab using the CAMRI scanner is the first user and test site; its rig and paradigms are examples, not the scope.
+
+What that means for every change:
+- **General, not site-specific.** Site details belong in rig files and examples, never hard-coded. No paradigm is "the" goal; each is one example of what Onset runs.
+- **Lean.** One Rust program does everything, from running to checking timing to building schedules, with nothing else to install. Avoid extra languages and runtimes; Python helpers are being ported into `onset` subcommands.
+- **Fast and honest timing.** Frame-accurate presentation with measured (not assumed) onsets in the logs.
+- **Modern and pleasant.** Clear terminal output, good defaults, TOML/TSV instead of code, BIDS output.
 
 **macOS only.** The stimulus computer at the scanner will be a Mac. Don't add Windows or Linux code, docs, or CI.
 
@@ -61,7 +67,6 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Run ends should follow the scanner:** a run that ends before the scan leaves the last volumes without a stimulus, and a scan that outlasts the run can start the next run with its last pulses (both happened at the scanner). The branch's `PulseWatch` (`src/scanner.rs`) holds the final screen until no pulse for max(5 s, 2.5 TR) and ignores pulses from a scan already under way. Port it into `run.rs`.
 - **Unexplained drops:** about one real dropped frame every 208 frames (1.73 s) on the scanner laptop at 120 Hz, confirmed by Metal's own timestamps, with both timing methods. Cause unknown.
 - Needed from the owner: the viewing distance to the BOLDscreen (paradigms given in degrees of visual angle need it to convert to pixels), and which finger each fORP button color is.
-- The NSD-style image run is the first paradigm to port, not the only one; keep the docs and code general.
 - Not supported yet: audio, video, scripting/staircases, eye tracking, pRF/fLoc-style animated or masked stimuli, editor UI.
 
 ## Setup on a new Mac
