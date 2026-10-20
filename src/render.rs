@@ -43,7 +43,8 @@ struct ImageInstance {
     half: [f32; 2],
 }
 
-/// Uniforms for `shaders/welcome.wgsl`. Boxes are physical pixels, top-left origin.
+/// Uniforms for `shaders/welcome.wgsl`. Boxes are x0, y0, x1, y1 in physical
+/// pixels from the top-left corner; an empty box draws nothing.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct WelcomeUniforms {
@@ -51,10 +52,40 @@ struct WelcomeUniforms {
     time: f32,
     scale: f32,
     accent: [f32; 4],
-    panel: [f32; 4],
-    title: [f32; 4],
-    beacon: [f32; 4],
+    /// The glass card behind the instructions or the waiting text.
+    card: [f32; 4],
+    /// The name (or title), with a soft glow behind it.
+    hero: [f32; 4],
+    /// Halo ring: center x, y, radius, strength.
+    ring: [f32; 4],
+    /// Standby dot: x, y, radius (logical px), on.
+    dot: [f32; 4],
+    /// x: the card's corner radius.
+    misc: [f32; 4],
 }
+
+/// The welcome screen's text, shaped (text cache keys).
+struct WelcomeText {
+    greeting: String,
+    hero: String,
+    /// The hero line at a smaller size, for when the instructions need the room.
+    hero_small: String,
+    title: Option<String>,
+    text: Option<String>,
+    powered_by: Option<[String; 2]>,
+}
+
+impl WelcomeText {
+    fn keys(self) -> impl Iterator<Item = String> {
+        [Some(self.greeting), Some(self.hero), Some(self.hero_small), self.title, self.text]
+            .into_iter()
+            .flatten()
+            .chain(self.powered_by.into_iter().flatten())
+    }
+}
+
+/// Logo height, as a fraction of the screen height.
+const LOGO_HEIGHT: f32 = 0.095;
 
 struct GpuImage {
     bind_group: wgpu::BindGroup,
@@ -105,6 +136,8 @@ pub struct Renderer {
 
     pub scale: f32,
     pub photodiode: Option<PhotodiodePatch>,
+    /// Shown in a top corner of the welcome screen (`set_logo`).
+    logo: Option<PathBuf>,
     window: Option<Arc<Window>>,
 }
 
@@ -446,6 +479,7 @@ impl Renderer {
             text_cache: HashMap::new(),
             scale,
             photodiode: None,
+            logo: None,
             window,
         }
     }
@@ -469,6 +503,28 @@ impl Renderer {
         if let Some(surface) = &self.surface {
             surface.configure(&self.device, &self.config);
         }
+        if let Err(e) = self.upload_logo() {
+            eprintln!("onset: {e:#}");
+        }
+    }
+
+    /// Show this image (PNG or JPEG) in a top corner of the welcome screen.
+    pub fn set_logo(&mut self, path: &Path) -> Result<()> {
+        self.logo = Some(path.to_path_buf());
+        self.upload_logo().inspect_err(|_| self.logo = None)
+    }
+
+    /// Upload the logo resized to the size it's drawn at, so it stays crisp
+    /// (images are drawn without mipmaps).
+    fn upload_logo(&mut self) -> Result<()> {
+        let Some(path) = self.logo.clone() else { return Ok(()) };
+        let img =
+            image::open(&path).with_context(|| format!("can't load logo {}", path.display()))?.to_rgba8();
+        let th = (LOGO_HEIGHT * self.config.height as f32).round().max(1.0) as u32;
+        let tw = (th as f32 * img.width() as f32 / img.height() as f32).round().max(1.0) as u32;
+        let img = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Lanczos3);
+        self.upload_image(&path, &img);
+        Ok(())
     }
 
     /// Load and upload images before the run so nothing is decoded mid-run.
@@ -485,6 +541,11 @@ impl Renderer {
         }
         let img =
             image::open(path).with_context(|| format!("can't load image {}", path.display()))?.to_rgba8();
+        self.upload_image(path, &img);
+        Ok(())
+    }
+
+    fn upload_image(&mut self, path: &Path, img: &image::RgbaImage) {
         let (w, h) = img.dimensions();
         let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -504,7 +565,7 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &img,
+            img,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: None },
             size,
         );
@@ -518,7 +579,6 @@ impl Renderer {
             ],
         });
         self.images.insert(path.to_path_buf(), GpuImage { bind_group, width: w as f32, height: h as f32 });
-        Ok(())
     }
 
     /// Shape and rasterize every text in `scenes` now, so the first frame
@@ -532,11 +592,7 @@ impl Renderer {
                     Item::Text { text, size, font, .. } => {
                         keys.push(self.ensure_text(text, size * self.scale, font.as_deref(), w))
                     }
-                    Item::Welcome(wl) => {
-                        let (title, greeting) = self.welcome_text(wl);
-                        keys.push(title);
-                        keys.extend(greeting);
-                    }
+                    Item::Welcome(wl) => keys.extend(self.welcome_text(wl).keys()),
                     _ => {}
                 }
             }
@@ -763,8 +819,12 @@ impl Renderer {
         // Only the screens before t0 have a welcome item; without one this
         // costs nothing (no uniform upload, no draw call).
         let welcome = welcome.map(|wl| self.layout_welcome(wl, &mut texts));
-        if let Some(u) = &welcome {
+        if let Some((u, logo)) = &welcome {
             self.queue.write_buffer(&self.welcome_buf, 0, bytemuck::bytes_of(u));
+            if let (Some(logo), Some(path)) = (logo, &self.logo) {
+                draws.push(Draw::Image(path.clone(), image_instances.len() as u32));
+                image_instances.push(*logo);
+            }
         }
 
         // Photodiode patch goes on top of everything.
@@ -887,91 +947,175 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
     }
 
-    /// The welcome title and greeting, shaped; returns their cache keys.
-    /// Sizes follow the screen height so the layout looks the same on any display.
-    fn welcome_text(&mut self, wl: &WelcomeScreen) -> (String, Option<String>) {
+    /// Shape the welcome screen's text. Sizes follow the screen height, so the
+    /// screen looks the same on any display.
+    fn welcome_text(&mut self, wl: &WelcomeScreen) -> WelcomeText {
         let (w, h) = (self.config.width as f32, self.config.height as f32);
         let font = Some(wl.font.as_str());
-        let title = self.ensure_styled_text(&wl.title, 0.052 * h, font, Weight::MEDIUM, 0.14, w);
-        let greeting = wl
-            .greeting
-            .as_deref()
-            .map(|g| self.ensure_styled_text(g, 0.032 * h, font, Weight::NORMAL, 0.03, w));
-        (title, greeting)
+        let hero_line = wl.name.as_deref().unwrap_or(&wl.title);
+        let greeting = wl.greeting.to_uppercase();
+        let greeting = self.ensure_styled_text(&greeting, 0.02 * h, font, Weight::MEDIUM, 0.32, w);
+        let hero = self.fit_line(hero_line, if wl.waiting { 0.12 } else { 0.085 } * h, font, w);
+        let hero_small = self.fit_line(hero_line, 0.06 * h, font, w);
+        let title = wl
+            .name
+            .is_some()
+            .then(|| self.ensure_styled_text(&wl.title, 0.028 * h, font, Weight::NORMAL, 0.01, w));
+        let text_font = wl.text_font.as_deref().or(font);
+        let text = wl.text.as_deref().map(|t| match wl.waiting {
+            true => self.ensure_styled_text(t, 0.032 * h, text_font, Weight::NORMAL, 0.0, w),
+            // At most 5% of the screen height, so the name keeps its place.
+            false => self.ensure_text(t, (wl.text_size * self.scale).min(0.05 * h), text_font, w),
+        });
+        let powered_by = wl.powered_by.then(|| {
+            let px = 0.017 * h;
+            [
+                self.ensure_styled_text("Powered by", px, font, Weight::NORMAL, 0.02, w),
+                self.ensure_styled_text("Onset", px, font, Weight::SEMIBOLD, 0.02, w),
+            ]
+        });
+        WelcomeText { greeting, hero, hero_small, title, text, powered_by }
     }
 
-    /// Place the welcome title and greeting at the top, move the screen's
-    /// own text (`texts`, the instructions or waiting text) down if it would
-    /// run into them, and fit the glass panel around it. Text too tall to
-    /// fit under the title keeps its place and the title is left out.
+    /// `text` in large semibold at `px`, or smaller if it would wrap.
+    fn fit_line(&mut self, text: &str, mut px: f32, font: Option<&str>, w: f32) -> String {
+        loop {
+            let key = self.ensure_styled_text(text, px, font, Weight::SEMIBOLD, -0.01, w);
+            if self.text_cache[&key].layout_runs().count() <= 1 || px < 24.0 {
+                return key;
+            }
+            px *= 0.85;
+        }
+    }
+
+    /// Lay out the welcome screen: its text goes into `texts`; returns the
+    /// shader's uniforms and where the logo goes.
+    ///
+    /// Waiting for the scanner, the name is front and center with the
+    /// waiting text in a pill under it. With instructions, the name sits on
+    /// top and the instructions on a glass card below; the name gets smaller
+    /// if the instructions need the room, and goes if even that won't fit.
     fn layout_welcome(
         &mut self,
         wl: &WelcomeScreen,
         texts: &mut Vec<(String, f32, f32, Color)>,
-    ) -> WelcomeUniforms {
+    ) -> (WelcomeUniforms, Option<ImageInstance>) {
         let (w, h) = (self.config.width as f32, self.config.height as f32);
-        let (title_key, greeting_key) = self.welcome_text(wl);
-        let (title_w, title_h) = line_extent(&self.text_cache[&title_key]);
-        let title_top = 0.085 * h;
-        let mut title = [(w - title_w) / 2.0, title_top, (w + title_w) / 2.0, title_top + title_h];
-        // The shader's glow line sits 0.022 h under the title.
-        let mut header_bottom = title[3] + 0.022 * h;
-        let mut header = vec![(title_key, 0.0, h / 2.0 - title_top - title_h / 2.0, wl.color)];
-        if let Some(key) = greeting_key {
-            let (_, gh) = line_extent(&self.text_cache[&key]);
-            let top = header_bottom + 0.02 * h;
-            header.push((key, 0.0, h / 2.0 - top - gh / 2.0, wl.accent));
-            header_bottom = top + gh;
-        }
-
-        // Bounding box of the screen's text (center-origin, +y up in `texts`).
-        let mut body: Option<[f32; 4]> = None;
-        for (key, x, y, _) in texts.iter() {
-            let (lw, bh) = line_extent(&self.text_cache[key]);
-            let top = h / 2.0 - y - bh / 2.0;
-            let b = [w / 2.0 + x - lw / 2.0, top, w / 2.0 + x + lw / 2.0, top + bh];
-            body = Some(body.map_or(b, |a| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]));
-        }
-        let (pad_x, pad_y) = (0.05 * h, 0.04 * h);
-        let mut panel = [0.0; 4];
-        if let Some(b) = body {
-            // Clear the header by 0.04 h, without pushing the panel off the bottom.
-            let needed = (header_bottom + 0.04 * h - (b[1] - pad_y)).max(0.0);
-            let room = 0.97 * h - (b[3] + pad_y);
-            let shift = if needed <= room { needed } else { 0.0 };
-            if needed > room {
-                header.clear();
-                title = [0.0; 4];
-            }
-            for t in texts.iter_mut() {
-                t.2 -= shift;
-            }
-            let half_w = ((b[2] - b[0]) / 2.0 + pad_x).max(0.17 * w);
-            let cx = (b[0] + b[2]) / 2.0;
-            panel = [
-                cx - half_w,
-                (b[1] - pad_y + shift).max(0.01 * h),
-                cx + half_w,
-                (b[3] + pad_y + shift).min(0.99 * h),
-            ];
-        }
-        texts.extend(header);
-
-        let beacon = if wl.waiting {
-            let below = if panel[2] > panel[0] { panel[3] } else { 0.5 * h };
-            [w / 2.0, (below + 0.1 * h).clamp(0.76 * h, 0.93 * h), 0.0, 1.0]
-        } else {
-            [0.0; 4]
+        let s = self.scale;
+        let keys = self.welcome_text(wl);
+        let cache = &self.text_cache;
+        let size = |key: &str| line_extent(&cache[key]);
+        // A text centered on `cx`, its top at `top` (top-left origin).
+        let at = |key: &str, cx: f32, top: f32, color: Color| {
+            (key.to_string(), cx - w / 2.0, h / 2.0 - top - size(key).1 / 2.0, color)
         };
-        WelcomeUniforms {
+        let faded = |a: f32| Color { a: wl.color.a * a, ..wl.color };
+        // Greeting, name and title stacked from `top`: the texts, the name's box, the bottom.
+        let header = |hero: &str, top: f32| {
+            let mut placed = vec![at(&keys.greeting, w / 2.0, top, wl.accent)];
+            let mut y = top + size(&keys.greeting).1 + 0.006 * h;
+            let (hw, hh) = size(hero);
+            placed.push(at(hero, w / 2.0, y, wl.color));
+            let hero_box = [(w - hw) / 2.0, y, (w + hw) / 2.0, y + hh];
+            y += hh;
+            if let Some(t) = &keys.title {
+                placed.push(at(t, w / 2.0, y + 0.004 * h, faded(0.62)));
+                y += 0.004 * h + size(t).1;
+            }
+            (placed, hero_box, y)
+        };
+
+        let (mut placed, hero_box, card, radius, ring, dot);
+        if wl.waiting {
+            let pill = keys.text.as_deref().map(|k| (k, size(k)));
+            let pill_h = pill.map_or(0.0, |(_, (_, th))| th + 0.032 * h);
+            let gap = if pill.is_some() { 0.07 * h } else { 0.0 };
+            let top = 0.47 * h - (header(&keys.hero, 0.0).2 + gap + pill_h) / 2.0;
+            let (p, hb, bottom) = header(&keys.hero, top);
+            (placed, hero_box) = (p, hb);
+            let (dot_r, inner) = (4.5, 0.024 * h);
+            let dot_space = 2.0 * dot_r * s + 0.014 * h;
+            match pill {
+                Some((key, (tw, th))) => {
+                    let pill_w = tw + dot_space + 2.0 * inner;
+                    let y0 = bottom + gap;
+                    card = [(w - pill_w) / 2.0, y0, (w + pill_w) / 2.0, y0 + pill_h];
+                    placed.push(at(
+                        key,
+                        card[0] + inner + dot_space + tw / 2.0,
+                        y0 + (pill_h - th) / 2.0,
+                        wl.color,
+                    ));
+                    dot = [card[0] + inner + dot_r * s, y0 + pill_h / 2.0, dot_r, 1.0];
+                }
+                None => (card, dot) = ([0.0; 4], [0.0; 4]),
+            }
+            radius = pill_h / 2.0;
+            ring = [w / 2.0, (hb[1] + hb[3]) / 2.0, 0.33 * h, 1.0];
+        } else {
+            let body = keys.text.as_deref().map(|k| (k, size(k)));
+            let (pad_x, pad_y) = (0.05 * h, 0.042 * h);
+            let card_h = body.map_or(0.0, |(_, (_, bh))| bh + 2.0 * pad_y);
+            let (top, limit) = (0.085 * h, 0.9 * h);
+            let fits = |hero: &str| header(hero, top).2 + 0.05 * h + card_h <= limit;
+            let hero = [&keys.hero, &keys.hero_small].into_iter().find(|k| fits(k));
+            let (p, hb, header_bottom) = match hero {
+                Some(k) => header(k, top),
+                None => (Vec::new(), [0.0; 4], 0.0),
+            };
+            (placed, hero_box) = (p, hb);
+            match body {
+                Some((key, (bw, _))) => {
+                    // Centered in the room under the name, or on the screen without it.
+                    let (lo, hi) = if hero.is_some() { (header_bottom + 0.05 * h, limit) } else { (0.0, h) };
+                    let y0 = (lo + (hi - lo - card_h) / 2.0).max(lo).max(0.01 * h);
+                    let card_w = (bw + 2.0 * pad_x).max(0.42 * w).min(0.98 * w);
+                    card = [(w - card_w) / 2.0, y0, (w + card_w) / 2.0, (y0 + card_h).min(0.99 * h)];
+                    placed.push(at(key, w / 2.0, y0 + pad_y, wl.color));
+                }
+                None => card = [0.0; 4],
+            }
+            radius = 22.0 * s;
+            dot = [0.0; 4];
+            ring = [w / 2.0, h / 2.0, 0.47 * h, 0.6];
+        }
+
+        // Corners: the logo top left and "Powered by Onset" bottom right,
+        // each moving out of the photodiode patch's way.
+        let margin = 0.045 * h;
+        let patch = |corner: Corner| match &self.photodiode {
+            Some(p) if p.corner == corner => p.size * s + margin,
+            _ => 0.0,
+        };
+        if let Some([by, onset]) = &keys.powered_by {
+            let ((bw, bh), (ow, _)) = (size(by), size(onset));
+            let right = w - margin - patch(Corner::BottomRight);
+            let top = h - margin - bh;
+            placed.push(at(onset, right - ow / 2.0, top, faded(0.72)));
+            placed.push(at(by, right - ow - 0.3 * bh - bw / 2.0, top, faded(0.42)));
+        }
+        let logo = self.logo.as_ref().and_then(|p| self.images.get(p)).map(|img| {
+            let lh = LOGO_HEIGHT * h;
+            let lw = lh * img.width / img.height;
+            let left = if patch(Corner::TopLeft) > 0.0 { w - margin - lw } else { margin };
+            ImageInstance {
+                center: [left + lw / 2.0 - w / 2.0, h / 2.0 - margin - lh / 2.0],
+                half: [lw / 2.0, lh / 2.0],
+            }
+        });
+        texts.extend(placed);
+        let uniforms = WelcomeUniforms {
             size: [w, h],
             time: wl.time,
-            scale: self.scale,
+            scale: s,
             accent: wl.accent.to_array(),
-            panel,
-            title,
-            beacon,
-        }
+            card,
+            hero: hero_box,
+            ring,
+            dot,
+            misc: [radius, 0.0, 0.0, 0.0],
+        };
+        (uniforms, logo)
     }
 
     /// Shape `text` once and cache it; returns the cache key.
@@ -989,7 +1133,7 @@ impl Renderer {
         spacing: f32,
         screen_w: f32,
     ) -> String {
-        let key = format!("{px}|{font:?}|{}|{spacing}|{text}", weight.0);
+        let key = format!("{px}|{font:?}|{}|{spacing}|{screen_w}|{text}", weight.0);
         if !self.text_cache.contains_key(&key) {
             let mut buf = TextBuffer::new(&mut self.font_system, Metrics::new(px, px * 1.3));
             buf.set_size(Some(screen_w * 0.9), None);

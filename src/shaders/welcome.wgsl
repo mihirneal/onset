@@ -1,8 +1,8 @@
-// The welcome screen's animated background ("grid" style): a dark horizon
-// with a slowly approaching perspective grid, a soft scan beam, drifting
-// particles, a glass panel behind the instructions and a glow line under the
-// title. One full-screen triangle, drawn only on the screens before t = 0.
-// Pixel coordinates here are physical pixels from the top-left corner.
+// The welcome screen's animated background ("halo" style): slowly flowing
+// light on near-black, a thin halo ring with a gliding highlight and fine
+// tick marks, drifting dust, a soft glow behind the name and a frosted-glass
+// card behind the text. One full-screen triangle, drawn only on the screens
+// before t = 0. Pixel coordinates are physical pixels from the top-left.
 
 struct Welcome {
     size: vec2<f32>,
@@ -11,18 +11,22 @@ struct Welcome {
     // Physical pixels per logical pixel.
     scale: f32,
     accent: vec4<f32>,
-    // Panel box x0, y0, x1, y1; empty (x1 <= x0) when there's no text.
-    panel: vec4<f32>,
-    // Title box x0, y0, x1, y1; the glow line runs under it.
-    title: vec4<f32>,
-    // Standby beacon x, y, unused, on (1 on the waiting screen).
-    beacon: vec4<f32>,
+    // Boxes are x0, y0, x1, y1; an empty box (x1 <= x0) draws nothing.
+    // The glass card behind the instructions or the waiting text.
+    card: vec4<f32>,
+    // The name (or title); a soft glow sits behind it.
+    hero: vec4<f32>,
+    // Halo ring: center x, y, radius, strength (0 = none).
+    ring: vec4<f32>,
+    // Standby dot: x, y, radius in logical px, on.
+    dot: vec4<f32>,
+    // x: the card's corner radius.
+    misc: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> u: Welcome;
 
 const TAU: f32 = 6.283185307179586;
-// Horizon height, as a fraction of the screen from the top.
-const HORIZON: f32 = 0.64;
+const VIOLET: vec3<f32> = vec3<f32>(0.42, 0.30, 1.0);
 
 @vertex
 fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4<f32> {
@@ -47,13 +51,25 @@ fn hash22(p: vec2<f32>) -> vec2<f32> {
     return fract((p3.xx + p3.yz) * p3.zy);
 }
 
-// Antialiased grid lines at the integers of `v`, about `width` px wide, with
-// a soft glow. `fw` is fwidth(v); lines fade out where they get too dense.
-fn grid_line(v: f32, fw: f32, width: f32, glow: f32) -> f32 {
-    let dist = abs(fract(v + 0.5) - 0.5) / max(fw, 1e-6);
-    let core = clamp(width * 0.5 + 0.5 - dist, 0.0, 1.0);
-    let halo = exp(-dist * dist / (2.0 * glow * glow)) * 0.35;
-    return (core + halo) * (1.0 - smoothstep(0.06, 0.3, fw));
+fn noise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let k = f * f * (3.0 - 2.0 * f);
+    let a = mix(hash12(i), hash12(i + vec2<f32>(1.0, 0.0)), k.x);
+    let b = mix(hash12(i + vec2<f32>(0.0, 1.0)), hash12(i + vec2<f32>(1.0, 1.0)), k.x);
+    return mix(a, b, k.y);
+}
+
+fn fbm(p: vec2<f32>) -> f32 {
+    var v = 0.0;
+    var a = 0.5;
+    var x = p;
+    for (var i = 0; i < 4; i++) {
+        v += a * noise(x);
+        x = x * 2.03 + vec2<f32>(17.1, 9.2);
+        a *= 0.5;
+    }
+    return v;
 }
 
 fn round_box(p: vec2<f32>, half: vec2<f32>, r: f32) -> f32 {
@@ -72,100 +88,102 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     // Centered, in screen heights.
     let q = (px - 0.5 * u.size) / h;
 
-    // Sky: near-black at the top, a deep accent-tinted blue at the horizon,
-    // with a faint violet haze drifting across.
-    let up = clamp(uv.y / HORIZON, 0.0, 1.0);
-    var col = mix(vec3<f32>(0.008, 0.010, 0.026), vec3<f32>(0.030, 0.040, 0.095) + accent * 0.05, up * up);
-    let haze = (0.5 + 0.5 * sin(q.x * 2.3 + t * 0.05)) * (0.5 + 0.5 * sin(q.y * 3.1 - q.x * 1.2 - t * 0.04));
-    col += vec3<f32>(0.045, 0.014, 0.080) * haze * (1.0 - up * 0.5);
+    // Near-black navy, a little lighter at the top.
+    var col = mix(vec3<f32>(0.020, 0.025, 0.048), vec3<f32>(0.008, 0.010, 0.022), uv.y);
 
-    // Floor below the horizon: depth z = 1/d, so lines converge on the
-    // horizon's center; the grid moves slowly toward the viewer.
-    let d = uv.y - HORIZON;
-    let z = 1.0 / max(d, 1e-3);
-    let gx = q.x * z * 3.0;
-    let gz = z * 3.0 + t * 0.35;
-    // Derivatives stay in uniform control flow (before any branch).
-    let fwx = fwidth(gx);
-    let fwz = fwidth(gz);
-    let floor_mask = smoothstep(0.0, 0.004, d);
-    let fog = clamp(exp(-(z - 2.8) * 0.11), 0.0, 1.0);
-    let grid = max(grid_line(gx, fwx, 1.3 * s, 2.5 * s), grid_line(gz, fwz, 1.3 * s, 2.5 * s));
-    col = mix(col, vec3<f32>(0.004, 0.006, 0.016), floor_mask * 0.6);
-    col += accent * grid * fog * floor_mask * 0.42 * exp(-q.x * q.x * 0.9);
+    // Flowing light: two soft fields of color, top left and bottom right,
+    // drifting slowly and shaped by domain-warped noise.
+    let warp = vec2<f32>(fbm(q * 1.1 + vec2<f32>(0.0, t * 0.020)), fbm(q * 1.1 + vec2<f32>(4.7, -t * 0.017)));
+    let flow = fbm(q * 1.6 + warp * 1.7 + vec2<f32>(t * 0.012, -t * 0.008));
+    let ca = vec2<f32>(-0.62 + 0.10 * sin(t * 0.031), -0.32 + 0.06 * cos(t * 0.027));
+    let cb = vec2<f32>(0.68 + 0.08 * cos(t * 0.023), 0.36 + 0.07 * sin(t * 0.029));
+    let da = (q - ca) * vec2<f32>(0.9, 1.4);
+    let db = (q - cb) * vec2<f32>(0.9, 1.3);
+    let fa = exp(-dot(da, da) * 2.6);
+    let fb = exp(-dot(db, db) * 2.4);
+    col += accent * fa * (0.06 + 0.38 * flow * flow);
+    col += VIOLET * fb * (0.05 + 0.28 * flow * flow);
+    col += mix(accent, VIOLET, uv.x) * 0.035 * smoothstep(0.45, 0.85, flow);
 
-    // Horizon: a broad glow and a thin bright line, fading to the sides.
-    let side = exp(-q.x * q.x * 2.2);
-    col += (accent * 0.55 + vec3<f32>(0.10, 0.04, 0.16)) * exp(-abs(d) * 14.0) * 0.32 * side;
-    col += vec3<f32>(0.16, 0.05, 0.30) * exp(-abs(d) * 8.0) * 0.22 * (1.0 - 0.7 * side);
-    col += accent * exp(-sq(d * h / (1.1 * s))) * 0.75 * side;
+    // A soft glow behind the name.
+    let has_hero = step(u.hero.x + 1.0, u.hero.z);
+    let hc = 0.5 * (u.hero.xy + u.hero.zw);
+    let hh = max(0.5 * (u.hero.zw - u.hero.xy), vec2<f32>(1.0, 1.0));
+    let he = (px - hc) / (hh * vec2<f32>(1.25, 2.6));
+    col += mix(accent, VIOLET, 0.3) * exp(-dot(he, he) * 1.4) * 0.07 * has_hero;
 
-    // Drifting particles: three layers of one dot per cell, rising slowly.
-    var dots = 0.0;
-    for (var i = 0; i < 3; i++) {
+    // Dust: sparse soft points in two depths, drifting up and to the right.
+    var dust = 0.0;
+    for (var i = 0; i < 2; i++) {
         let layer = f32(i);
-        let cell = 0.075 + 0.04 * layer;
-        let p = (q + vec2<f32>(0.0, t * (0.006 + 0.005 * layer))) / cell;
+        let cell = 0.09 + 0.06 * layer;
+        let p = (q + vec2<f32>(-t * 0.003, t * (0.005 + 0.004 * layer))) / cell;
         let id = floor(p) + vec2<f32>(layer * 37.0, layer * 11.0);
         let r = hash12(id);
-        let off = (hash22(id) - 0.5) * 0.55 + vec2<f32>(sin(t * 0.45 + r * TAU) * 0.08, 0.0);
+        let off = (hash22(id) - 0.5) * 0.6;
         let dist = length(fract(p) - 0.5 - off) * cell * h;
-        let rad = (0.7 + 1.3 * r) * s * (1.0 + 0.35 * layer);
-        let twinkle = 0.55 + 0.45 * sin(t * (0.7 + 1.3 * r) + r * 40.0);
-        let present = step(0.5, hash12(id + 5.17));
-        dots += (exp(-dist * dist / (rad * rad)) + 0.12 * exp(-dist * dist / (6.0 * rad * rad)))
-            * twinkle * present * (0.30 + 0.12 * layer);
+        let rad = (0.6 + 1.1 * r) * s * (1.0 + 0.6 * layer);
+        let twinkle = 0.6 + 0.4 * sin(t * (0.5 + r) + r * 40.0);
+        let present = step(0.62, hash12(id + 5.17));
+        dust += exp(-dist * dist / (rad * rad)) * twinkle * present * (0.22 + 0.10 * layer);
     }
-    col += mix(accent, vec3<f32>(1.0, 1.0, 1.0), 0.5) * dots;
+    col += mix(accent, vec3<f32>(1.0, 1.0, 1.0), 0.6) * dust;
 
-    // A soft scan beam sweeps down every 9 s, plus faint fixed scan lines.
-    let beam = fract(t / 9.0) * 1.3 - 0.15;
-    col += accent * exp(-sq((uv.y - beam) / 0.035)) * 0.035;
-    col *= 0.95 + 0.05 * cos(px.y * TAU / (3.0 * s));
+    // Halo ring: a thin line with a highlight gliding around it, a soft
+    // glow, and a ring of fine ticks just outside, every 15th one longer.
+    let rv = px - u.ring.xy;
+    let r = length(rv);
+    let radius = u.ring.z;
+    let ang = atan2(rv.y, rv.x);
+    let dr = (r - radius) / s;
+    // How far behind each highlight's head this point is (0-1 of a turn);
+    // the heads fade in over a few degrees so there's no hard edge.
+    let behind = fract((t * 0.42 - ang) / TAU);
+    let second = fract(behind + 0.5);
+    let comet = exp(-behind * 7.0) * smoothstep(0.0, 0.03, behind)
+        + 0.45 * exp(-second * 11.0) * smoothstep(0.0, 0.03, second);
+    let line = exp(-dr * dr / 1.1);
+    let glow = exp(-abs(dr) / 26.0);
+    col += mix(accent, vec3<f32>(1.0, 1.0, 1.0), 0.35 * comet)
+        * (line * (0.13 + 0.85 * comet) + glow * (0.025 + 0.06 * comet)) * u.ring.w;
+    let tick_r = radius + 26.0 * s;
+    let ta = (ang - t * 0.012) / TAU;
+    let arc = abs(fract(ta * 180.0 + 0.5) - 0.5) / 180.0 * TAU * r / s;
+    let major = 1.0 - step(0.5 / 15.0, abs(fract(ta * 12.0 + 0.5) - 0.5));
+    let tick_len = mix(4.0, 10.0, major);
+    let along = abs(r - tick_r) / s;
+    let tick = (1.0 - smoothstep(0.35, 0.95, arc))
+        * (1.0 - smoothstep(tick_len * 0.5 - 0.5, tick_len * 0.5 + 0.5, along));
+    col += vec3<f32>(0.70, 0.82, 1.0) * tick * mix(0.07, 0.22, major) * u.ring.w;
 
     // Vignette.
     let v = uv * (1.0 - uv);
-    col *= mix(0.45, 1.0, pow(clamp(v.x * v.y * 16.0, 1e-6, 1.0), 0.25));
+    col *= mix(0.5, 1.0, pow(clamp(v.x * v.y * 16.0, 1e-6, 1.0), 0.3));
 
-    // Glass panel behind the text: darkens what's behind it so the text
-    // stays readable, with a faint edge and brighter HUD corner brackets.
-    let has_panel = step(u.panel.x + 1.0, u.panel.z);
-    let pc = 0.5 * (u.panel.xy + u.panel.zw);
-    let ph = 0.5 * (u.panel.zw - u.panel.xy);
-    let lp = px - pc;
-    let sd = round_box(lp, ph, 14.0 * s);
-    let inside = 1.0 - smoothstep(-0.75, 0.75, sd);
-    col *= 1.0 - 0.45 * exp(-max(sd, 0.0) / (28.0 * s)) * has_panel;
-    col = mix(col, vec3<f32>(0.010, 0.014, 0.030) + accent * 0.012, inside * 0.9 * has_panel);
-    let edge = exp(-sq(sd / (0.75 * s)));
-    let bracket_len = 26.0 * s;
-    let corner = step(ph.x - bracket_len, abs(lp.x)) * step(ph.y - bracket_len, abs(lp.y));
-    col += accent * (edge * (0.16 + 0.7 * corner) + exp(-abs(sd) / (9.0 * s)) * 0.035) * has_panel;
+    // Frosted-glass card: darkens and softens what's behind it, a faint
+    // edge that's brightest along the top, and a soft shadow.
+    let has_card = step(u.card.x + 1.0, u.card.z);
+    let cc = 0.5 * (u.card.xy + u.card.zw);
+    let ch = 0.5 * (u.card.zw - u.card.xy);
+    let sd = round_box(px - cc, ch, u.misc.x);
+    let inside = (1.0 - smoothstep(-0.75, 0.75, sd)) * has_card;
+    col *= 1.0 - 0.45 * exp(-max(sd, 0.0) / (34.0 * s)) * has_card;
+    col = mix(col, col * 0.3 + vec3<f32>(0.022, 0.028, 0.052), inside);
+    let down = clamp((px.y - u.card.y) / max(u.card.w - u.card.y, 1.0), 0.0, 1.0);
+    let edge = exp(-sq(sd / (0.6 * s)));
+    col += vec3<f32>(0.80, 0.88, 1.0) * edge * mix(0.24, 0.05, down) * has_card;
+    col += vec3<f32>(0.60, 0.75, 1.0) * inside * exp(-max(px.y - u.card.y, 0.0) / (36.0 * s)) * 0.03;
 
-    // Glow line under the title, with a highlight gliding along it.
-    let tc = 0.5 * (u.title.x + u.title.z);
-    let line_y = u.title.w + 0.022 * h;
-    let reach = 0.5 * (u.title.z - u.title.x) + 0.09 * u.size.x;
-    let has_title = step(u.title.x + 1.0, u.title.z);
-    let taper = pow(clamp(1.0 - abs(px.x - tc) / max(reach, 1.0), 1e-6, 1.0), 1.5);
-    let glide = tc + sin(t * 0.35) * reach * 0.7;
-    let shine = 1.0 + 1.6 * exp(-sq((px.x - glide) / (90.0 * s)));
-    let dy = px.y - line_y;
-    col += accent * taper * shine * has_title
-        * (exp(-sq(dy / (0.9 * s))) * 0.9 + exp(-sq(dy / (12.0 * s))) * 0.12);
+    // Standby dot: solid, breathing, with a ring spreading out every 2 s.
+    let dd = length(px - u.dot.xy) / s;
+    let phase = fract(t / 2.0);
+    let core = 1.0 - smoothstep(u.dot.z - 0.75, u.dot.z + 0.75, dd);
+    let wave = exp(-sq((dd - u.dot.z - phase * 16.0) / 1.2)) * sq(1.0 - phase);
+    let breathe = 0.8 + 0.2 * sin(t * TAU / 2.0);
+    col = mix(col, accent * breathe, core * u.dot.w);
+    col += accent * (wave * 0.8 + exp(-dd * dd / max(sq(u.dot.z * 2.6), 1.0)) * 0.3) * u.dot.w;
 
-    // Standby beacon while waiting for the scanner: a dot with rings
-    // spreading out from it every 2.4 s.
-    let br = length(px - u.beacon.xy) / s;
-    var rings = 0.0;
-    for (var k = 0; k < 3; k++) {
-        let ph_k = fract(t / 2.4 + f32(k) / 3.0);
-        rings += exp(-sq((br - ph_k * 80.0) / 1.5)) * (1.0 - ph_k) * (1.0 - ph_k);
-    }
-    let beat = 0.7 + 0.3 * sin(t * TAU / 2.4);
-    col += accent * (exp(-br * br / 18.0) * beat + rings * 0.9) * u.beacon.w;
-
-    // Dither so the gradients don't band on 8-bit output.
-    col += (hash12(px) - 0.5) / 255.0;
+    // Fine static grain, which also keeps the gradients from banding.
+    col += (hash12(px) - 0.5) * (2.0 / 255.0);
     return vec4<f32>(col, 1.0);
 }

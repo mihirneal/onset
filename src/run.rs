@@ -233,17 +233,16 @@ impl<'e> Run<'e> {
         &self.timeline
     }
 
-    /// Greet the participant by name on the welcome screen (if the experiment
+    /// Show the participant's name on the welcome screen (if the experiment
     /// has one). The name is only drawn: no record, frame or log entry this
     /// run produces contains it.
     pub fn set_participant_name(&mut self, name: &str) {
-        let Some(def) = &self.exp.welcome else { return };
         let name = name.trim();
-        let greeting = (!name.is_empty()).then(|| def.greeting.replace("{name}", name));
+        let name = (!name.is_empty()).then(|| name.to_string());
         for scene in [&mut self.instructions, &mut self.waiting] {
             for item in &mut scene.items {
                 if let Item::Welcome(w) = item {
-                    w.greeting.clone_from(&greeting);
+                    w.name.clone_from(&name);
                 }
             }
         }
@@ -871,7 +870,8 @@ mod tests {
         let w1 = welcome(run.frame(1, 9.0 + P).scene).unwrap();
         assert!(!w0.waiting);
         assert_eq!(w0.title, "t", "title defaults to the experiment name");
-        assert_eq!(w0.greeting.as_deref(), Some("Welcome, Ada Lovelace"));
+        assert_eq!(w0.name.as_deref(), Some("Ada Lovelace"));
+        assert_eq!(w0.text.as_deref(), Some("Hi"));
         assert_eq!(w0.accent, "#ff8800".parse().unwrap());
         assert_eq!(w0.time, 0.0);
         assert!((w1.time - P as f32).abs() < 1e-6, "time advances one refresh per frame");
@@ -879,7 +879,7 @@ mod tests {
         run.input(Input::Continue, 9.0 + 1.5 * P);
         let w2 = welcome(run.frame(2, 9.0 + 2.0 * P).scene).expect("waiting screen has it too");
         assert!(w2.waiting);
-        assert_eq!(w2.greeting.as_deref(), Some("Welcome, Ada Lovelace"));
+        assert_eq!(w2.name.as_deref(), Some("Ada Lovelace"));
         assert!((w2.time - 2.0 * P as f32).abs() < 1e-6, "one clock across both screens");
 
         run.input(Input::Trigger, 9.0 + 2.5 * P);

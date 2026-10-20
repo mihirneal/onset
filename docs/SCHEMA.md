@@ -31,23 +31,26 @@ Colors can be names (`white black gray red green blue yellow`), hex values (`"#8
 
 ### `[welcome]`
 
-An optional animated title screen behind the instructions and the "waiting for the scanner" screen. Leave the table out and those screens are plain text on the experiment's `background`, as before. `[welcome]` with no keys turns it on with the defaults.
+An optional animated welcome screen behind the instructions and the "waiting for the scanner" screen. Leave the table out and those screens are plain text on the experiment's `background`, as before. `[welcome]` with no keys turns it on with the defaults.
 
 ```toml
 [welcome]
-style = "grid"
+style = "halo"
 ```
 
 | key | default | |
 |---|---|---|
-| `style` | `"grid"` | `"grid"`: a dark horizon with a slowly approaching perspective grid, a soft scan beam and drifting particles |
-| `title` | `[experiment] name` | Study title at the top of the screen |
-| `greeting` | `"Welcome, {name}"` | Line under the title, shown only when `onset run --name "First Last"` is given; `{name}` is replaced |
-| `accent` | `"#40c8ff"` | Color of the grid, glow lines and greeting |
+| `style` | `"halo"` | `"halo"`: slowly flowing light on near-black, a thin halo ring with a gliding highlight and fine tick marks, and drifting dust |
+| `title` | `[experiment] name` | Study title |
+| `greeting` | `"Welcome"` | Small line above the participant's name |
+| `accent` | `"#40c8ff"` | Color of the light, the ring and the greeting |
 | `color` | `"white"` | Color of all text on these screens, including the instructions |
-| `font` | `"Avenir Next"` | Font of the title and greeting. The instructions keep `[experiment] font` |
+| `font` | `"System Font"` (SF Pro) | Font of these screens. The instructions use it too, unless `[experiment] font` is set |
+| `powered_by` | `true` | "Powered by Onset" in the bottom-right corner |
 
-The instructions and waiting text sit on a dark glass panel so they stay readable, and move down if they would run into the title. Text too tall to fit under the title keeps its place, and the title is left out. The waiting screen adds a slowly pulsing standby beacon.
+`onset run --name "First Last"` puts the participant's name in front, large, with the greeting above it and the title below. Without `--name`, the title takes its place. On the waiting screen the name is centered and the waiting text sits in a small pill with a pulsing standby dot. On the instructions screen the name sits at the top and the instructions on a frosted-glass card below. The instructions are drawn at `[experiment] font_size`, but at most 5% of the screen height. When they're too tall, the name gets smaller, and if that's still not enough it's left out so the instructions stay readable.
+
+The rig's `[site] logo` goes in the top-left corner (see the rig file below). The logo and the footer move out of the way of the photodiode patch if it's in their corner.
 
 The welcome screen is gone from the first kept trigger (t = 0): from then on only the experiment's own screens are drawn, and the welcome background costs nothing (no draw call, no per-frame work). Its animation runs on the frame clock, like checkerboard reversals. The photodiode patch is drawn on top of it exactly as on any other screen.
 
@@ -176,6 +179,9 @@ flash_frames = 3       # white for this many frames at every onset, black otherw
 
 [output]
 dir = "data"
+
+[site]
+logo = "logo.png"      # PNG or JPEG in the welcome screen's top-left corner; relative to the rig file, ~/ for home
 ```
 
 Operator keys always work, whatever the rig: **Space** or **Enter** continues past the instructions, and **Esc** aborts and saves.

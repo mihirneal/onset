@@ -7,7 +7,7 @@
 use onset::experiment::Experiment;
 use onset::output::{self, InputRecord, LogMsg, Paths};
 use onset::render::{PhotodiodePatch, Renderer};
-use onset::rig::Corner;
+use onset::rig::{Corner, Rig};
 use onset::run::{Input, Phase, Run};
 use onset::scene::{Item, Scene};
 use onset::schedule;
@@ -22,11 +22,20 @@ fn example(name: &str) -> Experiment {
     Experiment::load(&path).unwrap()
 }
 
-fn greeting(scene: &Scene) -> Option<String> {
+fn shown_name(scene: &Scene) -> Option<String> {
     scene.items.iter().find_map(|i| match i {
-        Item::Welcome(w) => w.greeting.clone(),
+        Item::Welcome(w) => w.name.clone(),
         _ => None,
     })
+}
+
+/// The scanner rig's logo (Baylor College of Medicine), which ships with the examples.
+fn scanner_logo() -> PathBuf {
+    let rig =
+        Rig::load(&Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/rigs/scanner-forp.toml")).unwrap();
+    let logo = rig.site.logo.expect("the scanner rig has a [site] logo");
+    assert!(logo.exists(), "{}", logo.display());
+    logo
 }
 
 fn has_welcome(scene: &Scene) -> bool {
@@ -89,7 +98,7 @@ fn participant_name_is_shown_but_never_written() {
         });
 
         let plan = run.frame(frame, t);
-        if greeting(plan.scene).is_some_and(|g| g.contains(NAME)) {
+        if shown_name(plan.scene).as_deref() == Some(NAME) {
             greeted += 1;
         }
         for r in run.take_started_responses() {
@@ -176,6 +185,7 @@ fn welcome_screen_renders_offscreen() {
         }
     };
     r.photodiode = Some(PhotodiodePatch { corner: Corner::BottomLeft, size: 40.0 });
+    r.set_logo(&scanner_logo()).unwrap();
     let snapshots = std::env::var_os("ONSET_WELCOME_SNAPSHOTS").map(PathBuf::from);
     if let Some(dir) = &snapshots {
         std::fs::create_dir_all(dir).unwrap();
@@ -216,6 +226,13 @@ fn welcome_screen_renders_offscreen() {
     assert_eq!(corner, 0.0, "nothing of the welcome screen may remain after t0");
     let corner: f32 = (0..100).flat_map(|y| (0..100).map(move |x| (x, y))).map(|(x, y)| lum(&w, x, y)).sum();
     assert!(corner > 0.0);
+    // The logo top left (BCM navy, #003087), "Powered by Onset" bottom right.
+    for img in [&a, &w] {
+        let [r, g, b, _] = img.get_pixel(60, 60).0;
+        assert!(r < 20 && (35..65).contains(&g) && (115..155).contains(&b), "logo pixel {:?}", [r, g, b]);
+        let footer = (1920 - 320..1920 - 48).flat_map(|x| (1080 - 80..1080 - 48).map(move |y| (x, y)));
+        assert!(footer.map(|(x, y)| lum(img, x, y)).fold(0.0, f32::max) > 0.3, "no footer text");
+    }
 
     let Some(dir) = snapshots else { return };
     a.save(dir.join("flanker_instructions.png")).unwrap();
@@ -235,6 +252,7 @@ fn welcome_screen_renders_offscreen() {
     let [_, _, waiting, _] = screens(&exp, None);
     r.snapshot(&waiting, Some(false)).unwrap().save(dir.join("flanker_waiting_no_name.png")).unwrap();
     let mut retina = Renderer::headless(2560, 1600, 2.0).unwrap();
+    retina.set_logo(&scanner_logo()).unwrap();
     let [instructions, ..] = screens(&exp, Some("Jordan Rivera"));
     retina.snapshot(&instructions, None).unwrap().save(dir.join("flanker_instructions_retina.png")).unwrap();
 }

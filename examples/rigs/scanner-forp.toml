@@ -47,5 +47,8 @@ corner = "bottom-left"
 size = 40
 flash_frames = 3
 
+[site]
+logo = "bcm-logo.png"  # Baylor College of Medicine, on the welcome screen
+
 [output]
 dir = "data"

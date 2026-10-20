@@ -90,37 +90,42 @@ pub struct Welcome {
     pub style: WelcomeStyle,
     /// Study title; defaults to `[experiment] name`.
     pub title: Option<String>,
-    /// Line under the title when `onset run --name` is given; `{name}` is
-    /// replaced with the participant's name.
+    /// Small line above the participant's name (`onset run --name`), or
+    /// above the title when no name is given.
     #[serde(default = "default_greeting")]
     pub greeting: String,
-    /// Color of the grid, glow lines and greeting.
+    /// Color of the light, the halo ring and the greeting.
     #[serde(default = "default_accent")]
     pub accent: Color,
     /// Color of all text on the welcome screens, including the instructions.
     #[serde(default = "default_foreground")]
     pub color: Color,
-    /// Font for the title and greeting; the instructions keep `[experiment] font`.
+    /// Font of the welcome screens; the instructions use it too unless
+    /// `[experiment] font` is set.
     #[serde(default = "default_welcome_font")]
     pub font: String,
+    /// "Powered by Onset" in the bottom-right corner.
+    #[serde(default = "yes")]
+    pub powered_by: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WelcomeStyle {
-    /// A dark horizon with a slowly moving perspective grid, scan lines and drifting particles.
+    /// Slowly flowing light on near-black, a thin halo ring and drifting dust.
     #[default]
-    Grid,
+    Halo,
 }
 
 fn default_greeting() -> String {
-    "Welcome, {name}".into()
+    "Welcome".into()
 }
 fn default_accent() -> Color {
     Color::rgb8(64, 200, 255)
 }
+/// The Mac's system font (SF Pro).
 fn default_welcome_font() -> String {
-    "Avenir Next".into()
+    "System Font".into()
 }
 
 /// A named thing that can be drawn. Strings may contain `{column}` templates.

@@ -53,22 +53,31 @@ pub enum Item {
         color: Color,
         font: Option<String>,
     },
-    /// The animated welcome background, title and greeting. Only the screens
-    /// before t = 0 have one; the renderer draws it behind everything else.
+    /// A whole welcome screen: the animated background with the greeting,
+    /// name, title and the screen's text. Only the screens before t = 0 have
+    /// one; the renderer lays it out and draws it.
     Welcome(WelcomeScreen),
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WelcomeScreen {
     pub style: WelcomeStyle,
+    pub greeting: String,
     pub title: String,
-    /// The greeting with the participant's name filled in. Display only:
-    /// nothing Onset writes to disk contains it.
-    pub greeting: Option<String>,
+    /// The participant's name, shown large. Display only: nothing Onset
+    /// writes to disk contains it.
+    pub name: Option<String>,
+    /// The instructions, or the waiting text.
+    pub text: Option<String>,
+    /// Size of the instructions in logical px (`[experiment] font_size`).
+    pub text_size: f32,
+    pub text_font: Option<String>,
     pub accent: Color,
     pub color: Color,
     pub font: String,
-    /// The wait for the scanner (adds a standby beacon) rather than the instructions.
+    pub powered_by: bool,
+    /// The wait for the scanner (the name centered, a standby dot) rather
+    /// than the instructions.
     pub waiting: bool,
     /// Animation time in seconds, from frame flip times; the runtime advances it.
     pub time: f32,
@@ -96,32 +105,27 @@ impl Scene {
         }
     }
 
-    /// `text` on the welcome screen: the experiment's text over the animated
-    /// background, in the welcome's text color so it stays readable.
+    /// The welcome screen showing `text` (the instructions or the waiting
+    /// text), if the experiment has a `[welcome]` table.
     pub fn welcome(exp: &Experiment, text: &str, waiting: bool) -> Option<Scene> {
         let w = exp.welcome.as_ref()?;
         let m = &exp.experiment;
-        let mut items = vec![Item::Welcome(WelcomeScreen {
+        let screen = WelcomeScreen {
             style: w.style,
+            greeting: w.greeting.clone(),
             title: w.title.clone().unwrap_or_else(|| m.name.clone()),
-            greeting: None,
+            name: None,
+            text: (!text.trim().is_empty()).then(|| text.to_string()),
+            text_size: m.font_size,
+            text_font: m.font.clone(),
             accent: w.accent,
             color: w.color,
             font: w.font.clone(),
+            powered_by: w.powered_by,
             waiting,
             time: 0.0,
-        })];
-        if !text.trim().is_empty() {
-            items.push(Item::Text {
-                text: text.to_string(),
-                x: 0.0,
-                y: 0.0,
-                size: m.font_size,
-                color: w.color,
-                font: m.font.clone(),
-            });
-        }
-        Some(Scene { background: Color::BLACK, items })
+        };
+        Some(Scene { background: Color::BLACK, items: vec![Item::Welcome(screen)] })
     }
 
     /// Set every checkerboard's contrast phase and the welcome animation for

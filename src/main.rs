@@ -182,6 +182,9 @@ fn cmd_validate(exp_path: &Path, rig_path: Option<&Path>, schedule: Option<&Path
     let exp = load_experiment(exp_path, schedule)?;
     let rig = load_rig(rig_path)?;
     let tl = schedule::compile(&exp, 1, nominal_hz(&rig))?;
+    if let Some(logo) = rig.site.logo.as_ref().filter(|p| !p.exists()) {
+        println!("{} the rig's [site] logo {} doesn't exist", yellow("warning:"), logo.display());
+    }
     for ev in &exp.trial.events {
         if let Some(r) = &ev.response {
             for b in &r.buttons {
@@ -325,12 +328,18 @@ fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
                 match (reader.exclusive, filtered) {
                     (true, _) => "exclusively (its keys don't reach other apps)",
                     (false, true) => "shared, with its keystrokes filtered out of other apps",
-                    (false, false) => "shared (its keys also reach the app in front; allow Accessibility to filter them)",
+                    (false, false) =>
+                        "shared (its keys also reach the app in front; allow Accessibility to filter them)",
                 }
             );
         }
         TriggerSource::Serial => {
-            input::spawn_serial(rig.trigger.port.as_deref().unwrap_or_default(), rig.trigger.baud, tx, stop.clone())?;
+            input::spawn_serial(
+                rig.trigger.port.as_deref().unwrap_or_default(),
+                rig.trigger.baud,
+                tx,
+                stop.clone(),
+            )?;
         }
         TriggerSource::Keyboard | TriggerSource::Simulated => {
             anyhow::bail!(
@@ -545,7 +554,12 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         paths.events_tsv().display()
     );
     println!("   trigger: {trigger_desc}");
-    println!("   {}", dim("the first scanner pulse starts the run · Ctrl-C here or Esc on the stimulus window aborts (data is saved)"));
+    println!(
+        "   {}",
+        dim(
+            "the first scanner pulse starts the run · Ctrl-C here or Esc on the stimulus window aborts (data is saved)"
+        )
+    );
 
     let setup = RunSetup {
         exp,
@@ -768,6 +782,11 @@ impl App {
         if rig.photodiode.enabled {
             renderer.photodiode =
                 Some(PhotodiodePatch { corner: rig.photodiode.corner, size: rig.photodiode.size });
+        }
+        if let Some(logo) = &rig.site.logo {
+            if let Err(e) = renderer.set_logo(logo) {
+                eprintln!("{} {e:#}; the welcome screen will have no logo", yellow("warning:"));
+            }
         }
         let monitor_hz =
             monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()).map(|mhz| mhz as f64 / 1000.0);
