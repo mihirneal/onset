@@ -53,7 +53,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 
 ## The scanner rig (CAMRI, confirmed 2026-10-20)
 
-- **Scanner:** Siemens MAGNETOM Prisma at BCM's Core for Advanced MRI (CAMRI).
+- **Scanner:** Siemens MAGNETOM Prisma at the Center for Advanced Magnetic Resonance Imaging (CAMRI), Baylor College of Medicine, Houston, TX. The README credits CAMRI as where Onset is developed and tested.
 - **Display:** BOLDscreen32, 1920×1080 at 120 Hz. Connect it as a separate display, not mirrored: mirroring rendered at the laptop's 16:10 and scaled it onto the 16:9 panel at the laptop's 60 Hz. Video path: Mac → USB-C-to-DVI adapter → Gefen DVI KVM in the control room → BOLDscreen; the control-room "SCANNER VIEW" monitor shows what the participant sees. Rig file: `examples/rigs/scanner-forp.toml`.
 - **Trigger:** Current Designs fORP 932 (USB 0x181b:0x0008, an HID keyboard + mouse + joystick, no serial port) in "HID KEY BYGRT" mode: one `t` per volume, buttons `b y g r`. Its USB-A cable is bundled with the Gefen KVM cable; a laptop needs a USB-C-to-A adapter. macOS shows the Keyboard Setup Assistant the first time; close it.
 - **Trigger behaviour:** measured TR 2.8 s → 2.7997–2.8001 s, TR 1.5 s → 1.4991–1.4999 s, SD about 5 ms (keyboard and event-loop delay, not the scanner). Dummy volumes send no pulse, so the first pulse is the first saved volume. The localizer sends no pulses.
