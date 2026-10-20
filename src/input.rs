@@ -199,35 +199,6 @@ pub fn parse_usb_id(s: &str) -> Option<(u16, u16)> {
     Some((hex(v)?, hex(p)?))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn letters_and_digits_from_usage_codes() {
-        assert_eq!(usage_char(0x17), Some('t'));
-        assert_eq!(usage_char(0x05), Some('b'));
-        assert_eq!(usage_char(0x1c), Some('y'));
-        assert_eq!(usage_char(0x22), Some('5'));
-        assert_eq!(usage_char(0x27), Some('0'));
-        assert_eq!(usage_char(0x28), None); // Enter
-    }
-
-    #[test]
-    fn keys_in_plain_and_numbered_reports() {
-        assert_eq!(keys_in_report(&[0, 0, 0x17, 0, 0, 0, 0, 0]), vec![0x17]);
-        assert_eq!(keys_in_report(&[1, 0, 0, 0x17, 0x05, 0, 0, 0, 0]), vec![0x17, 0x05]);
-        assert!(keys_in_report(&[0; 8]).is_empty());
-    }
-
-    #[test]
-    fn usb_ids() {
-        assert_eq!(parse_usb_id("181b:0008"), Some((0x181b, 0x0008)));
-        assert_eq!(parse_usb_id("0x181B:0x0008"), Some((0x181b, 0x0008)));
-        assert_eq!(parse_usb_id("181b"), None);
-    }
-}
-
 /// A fake scanner: sends `raw` every `tr` seconds, starting `first_after`
 /// seconds from now, on a fixed grid (no drift).
 pub fn spawn_simulated_scanner(
@@ -266,4 +237,33 @@ pub fn spawn_simulated_scanner(
             }
         })
         .expect("spawn simulated scanner thread")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn letters_and_digits_from_usage_codes() {
+        assert_eq!(usage_char(0x17), Some('t'));
+        assert_eq!(usage_char(0x05), Some('b'));
+        assert_eq!(usage_char(0x1c), Some('y'));
+        assert_eq!(usage_char(0x22), Some('5'));
+        assert_eq!(usage_char(0x27), Some('0'));
+        assert_eq!(usage_char(0x28), None); // Enter
+    }
+
+    #[test]
+    fn keys_in_plain_and_numbered_reports() {
+        assert_eq!(keys_in_report(&[0, 0, 0x17, 0, 0, 0, 0, 0]), vec![0x17]);
+        assert_eq!(keys_in_report(&[1, 0, 0, 0x17, 0x05, 0, 0, 0, 0]), vec![0x17, 0x05]);
+        assert!(keys_in_report(&[0; 8]).is_empty());
+    }
+
+    #[test]
+    fn usb_ids() {
+        assert_eq!(parse_usb_id("181b:0008"), Some((0x181b, 0x0008)));
+        assert_eq!(parse_usb_id("0x181B:0x0008"), Some((0x181b, 0x0008)));
+        assert_eq!(parse_usb_id("181b"), None);
+    }
 }
