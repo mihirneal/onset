@@ -1,12 +1,13 @@
 # Onset
 
-General-purpose, open-source stimulus presentation software in Rust: a modern replacement for E-Prime that is leaner, faster and better. A real, production-quality tool for anyone running experiments (fMRI first), not a one-lab project. A BCM lab using the CAMRI scanner is the first user and test site; its rig and paradigms are examples, not the scope.
+General-purpose, open-source stimulus presentation software in Rust: lean, fast and modern. A real, production-quality tool for anyone running experiments (fMRI first), not a one-lab project. A BCM lab using the CAMRI scanner is the first user and test site; its rig and paradigms are examples, not the scope.
 
 What that means for every change:
 - **General, not site-specific.** Site details belong in rig files and examples, never hard-coded. No paradigm is "the" goal; each is one example of what Onset runs.
 - **Lean.** One Rust program does everything, from running to checking timing to building schedules, with nothing else to install. Avoid extra languages and runtimes; Python helpers are being ported into `onset` subcommands.
 - **Fast and honest timing.** Frame-accurate presentation with measured (not assumed) onsets in the logs.
 - **Modern and pleasant.** Clear terminal output, good defaults, TOML/TSV instead of code, BIDS output.
+- **Respectful.** Describe Onset on its own merits. Don't name or criticize other presentation software in docs, messages or marketing; naming a file format Onset can read (e.g. an export it imports) is fine.
 
 **macOS only.** The stimulus computer at the scanner will be a Mac. Don't add Windows or Linux code, docs, or CI.
 
@@ -47,7 +48,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Scanner sync:** keyboard trigger (the CAMRI fORP types "t" in its BYGRT mode, "5" in 12345 mode), serial trigger box, or a simulated scanner. The window must keep keyboard focus for keyboard triggers; Onset warns loudly if it loses focus.
 - **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
-- **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock. Compare against E-Prime on the same paradigm.
+- **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock. The same check works for other presentation software on the same paradigm, for a like-for-like comparison.
 - **NSD:** stimuli may not be redistributed. NSD images live outside the repo (`~/nsd/`), and `.gitignore` blocks `*_nsd*.png`. Never commit them.
 
 ## The scanner rig (CAMRI, confirmed 2026-10-20)

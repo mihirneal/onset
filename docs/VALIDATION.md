@@ -1,7 +1,7 @@
 # Timing validation protocol
 
 How to show, with a photodiode, that Onset's stimulus onsets are where its logs
-say they are — and how it compares with E-Prime on the same paradigm.
+say they are, and how to run the same check on other presentation software.
 
 Hardware and wiring: [`hardware/README.md`](../hardware/README.md).
 Tools: `tools/capture_probe.py` (record the probe), `tools/analyze_timing.py`
@@ -117,9 +117,11 @@ physicist/engineer first.
 Also check: `triggers_logged` equals the number of volumes Onset was running
 for, and `trigger_residual_sd_ms` (fORP/USB path) is small (< 1–2 ms).
 
-## 4. E-Prime comparison — same paradigm, same rig
+## 4. Comparing with other software — same paradigm, same rig
 
-Goal: a like-for-like comparison against the program Onset replaces.
+Goal: a like-for-like measurement of another program on the same rig. The
+analysis reads E-Prime's tab-delimited export; the steps below use it as the
+example.
 
 1. Implement the same paradigm in E-Prime, on the same PC, display and
    trigger box. Add the **same patch**: a white rectangle in the same corner
@@ -151,7 +153,7 @@ Goal: a like-for-like comparison against the program Onset replaces.
    E-Prime started on looks wrong, force it with `--eprime-trigger-index N`
    (0-based count of `T` lines).
 
-Compare Onset and E-Prime on: latency SD, worst event, frame-off events,
+Compare the two runs on: latency SD, worst event, frame-off events,
 dropped frames, and `true_minus_logged` mean/SD.
 
 ## What to report

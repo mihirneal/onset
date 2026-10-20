@@ -6,7 +6,7 @@ All timestamps come from one monotonic clock (`std::time::Instant`, which is `ma
 
 ## Absolute scheduling
 
-The schedule compiler turns the experiment into a list of events with **absolute planned onsets** in seconds after t = 0. Back-to-back events are planned by adding up durations at compile time, which is exact arithmetic. At runtime nothing is ever added up: each frame asks "which event's onset is nearest this flip?" A dropped frame, slow disk, or busy CPU therefore delays at most the frame it hits; the next frame is back on schedule. E-Prime's "cumulative" mode does the same, but there it's opt-in; here it's the only mode.
+The schedule compiler turns the experiment into a list of events with **absolute planned onsets** in seconds after t = 0. Back-to-back events are planned by adding up durations at compile time, which is exact arithmetic. At runtime nothing is ever added up: each frame asks "which event's onset is nearest this flip?" A dropped frame, slow disk, or busy CPU therefore delays at most the frame it hits; the next frame is back on schedule. This is the only scheduling mode.
 
 ## Frames
 

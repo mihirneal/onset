@@ -1,7 +1,7 @@
 //! Colors as written in experiment files: `"#808080"`, `"white"`, or `[128, 128, 128]`.
 //!
 //! Values go to the display unmodified (no sRGB/gamma conversion), the same as
-//! E-Prime and Psychtoolbox, so `[128, 128, 128]` lights pixels at 128/255.
+//! other stimulus software, so `[128, 128, 128]` lights pixels at 128/255.
 
 use serde::{Deserialize, Deserializer};
 use std::fmt;
