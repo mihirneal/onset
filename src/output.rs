@@ -134,6 +134,7 @@ fn phase_name(p: Phase) -> &'static str {
         Phase::Instructions => "instructions",
         Phase::Waiting => "waiting",
         Phase::Running => "running",
+        Phase::Holding => "holding",
         Phase::Done(_) => "done",
     }
 }
@@ -169,7 +170,10 @@ fn writer(
     let mut frames = open("frames.tsv")?;
     let mut inputs = open("inputs.tsv")?;
     let mut eventlog = open("eventlog.tsv")?;
-    writeln!(frames, "frame\ttime\tt\tinterval_ms\tmissed\tphase\tevent\tphotodiode")?;
+    writeln!(
+        frames,
+        "frame\ttime\tt\tinterval_ms\tmissed\tphase\tevent\tphotodiode\tpresented\tpresented_t\treport"
+    )?;
     writeln!(inputs, "time\tt\tsource\traw\tkind\tlabel")?;
 
     // Schedule columns become extra events.tsv columns; rename clashes with ours.
@@ -202,7 +206,7 @@ fn writer(
             Some(LogMsg::T0(t)) => t0 = Some(t),
             Some(LogMsg::Frame(f)) => writeln!(
                 frames,
-                "{}\t{:.6}\t{}\t{:.3}\t{}\t{}\t{}\t{}",
+                "{}\t{:.6}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 f.index,
                 f.acquired,
                 rel(f.acquired, t0),
@@ -210,7 +214,10 @@ fn writer(
                 f.missed,
                 phase_name(f.phase),
                 f.event.map_or("n/a".into(), |e| e.to_string()),
-                f.photodiode as u8
+                f.photodiode as u8,
+                num(f.report.presented(), 6),
+                f.report.presented().map_or("n/a".into(), |p| rel(p, t0)),
+                f.report.label()
             )?,
             Some(LogMsg::Input(i)) => writeln!(
                 inputs,
@@ -304,8 +311,8 @@ fn event_cells(e: &EventRecord) -> Vec<String> {
 
 fn sidecar(extra: &[(String, String)]) -> serde_json::Value {
     let mut v = serde_json::json!({
-        "onset": {"Description": "Measured time the event first appeared on screen (flip of its first frame), relative to the first kept scanner trigger.", "Units": "s"},
-        "duration": {"Description": "Measured time from this event's first flip to the first flip that no longer showed it.", "Units": "s"},
+        "onset": {"Description": "Measured time the event first appeared on screen, relative to the first kept scanner trigger: when its first frame was on screen, as reported by the display (estimated from the frame loop for a frame it did not report; see frame_timing in run.json).", "Units": "s"},
+        "duration": {"Description": "Measured time from this event's first frame on screen to the first frame that no longer showed it.", "Units": "s"},
         "trial_type": {"Description": "Condition label from the experiment's trial_type template."},
         "response_time": {"Description": "Time from the measured onset to the first accepted button press.", "Units": "s"},
         "response": {"Description": "Button label of the first accepted response, n/a if none."},

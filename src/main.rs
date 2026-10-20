@@ -10,11 +10,14 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use console::{bold, dim, green, red, yellow};
 use onset::experiment::Experiment;
+use onset::hostclock::HostClock;
 use onset::input::{self, RawInput, Source};
 use onset::output::{self, LogMsg, Paths, WriterReport};
+use onset::planner::{self, Feedback, Planner};
 use onset::render::{PhotodiodePatch, Renderer};
 use onset::rig::{MonitorSelect, Rig, TriggerSource};
-use onset::run::{EndReason, Input, Phase, Run};
+use onset::run::{EndReason, FEEDBACK_TIMEOUT_S, Input, InputUse, Notice, Phase, Report, Run};
+use onset::scanner::{DEFAULT_QUIET_S, PulseWatch};
 use onset::schedule::{self, Timeline};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -339,29 +342,24 @@ fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
     }
     println!("Listening. Press buttons or start the scanner; Ctrl-C stops.");
     let start = Instant::now();
-    let mut triggers = 0u32;
-    let mut last_trigger: Option<Instant> = None;
-    let mut gaps: Vec<f64> = Vec::new();
+    let mut pulses = PulseWatch::new(DEFAULT_QUIET_S);
     loop {
-        if seconds.is_some_and(|s| start.elapsed().as_secs_f64() >= s) {
+        let now = start.elapsed().as_secs_f64();
+        if seconds.is_some_and(|s| now >= s) {
             break;
         }
         // Without --seconds, stop once the scan has ended, so the scanner's
         // last pulses are never left to type into whatever app is in front.
         if seconds.is_none()
-            && let Some(last) = last_trigger
-            && triggers >= 2
+            && let Some(tr) = pulses.tr_s()
+            && pulses.stopped(now)
         {
-            let mut sorted = gaps.clone();
-            sorted.sort_by(f64::total_cmp);
-            let tr = sorted[sorted.len() / 2];
-            let quiet = (2.5 * tr).max(5.0);
-            if last.elapsed().as_secs_f64() >= quiet {
-                println!(
-                    "The scanner stopped ({triggers} pulses, TR {tr:.3} s; no pulse for {quiet:.1} s)."
-                );
-                break;
-            }
+            println!(
+                "The scanner stopped ({} pulses, TR {tr:.3} s; no pulse for {:.1} s).",
+                pulses.count(),
+                pulses.stopped_after_s()
+            );
+            break;
         }
         match rx.recv_timeout(Duration::from_millis(200)) {
             Ok(RawInput::Key { t, source, raw }) => {
@@ -369,15 +367,9 @@ fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
                 let (input, _, label) = App::classify(&rig, source, &raw);
                 let what = match input {
                     Some(Input::Trigger) => {
-                        triggers += 1;
-                        let gap = last_trigger.map_or(String::new(), |p| {
-                            format!("  (+{:.3} s)", t.saturating_duration_since(p).as_secs_f64())
-                        });
-                        if let Some(p) = last_trigger {
-                            gaps.push(t.saturating_duration_since(p).as_secs_f64());
-                        }
-                        last_trigger = Some(t);
-                        green(&format!("trigger {triggers}{gap}"))
+                        let gap = pulses.last_s().map_or(String::new(), |p| format!("  (+{:.3} s)", at - p));
+                        pulses.pulse(at);
+                        green(&format!("trigger {}{gap}", pulses.count()))
                     }
                     Some(_) => format!("button {}", bold(&label)),
                     None => dim("not in the rig"),
@@ -627,6 +619,7 @@ fn present(mode: Mode) -> Result<()> {
         mode: Some(mode),
         state: None,
         epoch: Instant::now(),
+        clock: HostClock::calibrate(1000),
         raw_tx,
         raw_rx,
         stop: Arc::new(AtomicBool::new(false)),
@@ -646,7 +639,10 @@ fn present(mode: Mode) -> Result<()> {
 struct App {
     mode: Option<Mode>,
     state: Option<Active>,
+    /// Zero of the run clock: every time in the run is seconds since this.
     epoch: Instant,
+    /// Converts between `Instant`s and the host time Metal reports frames in.
+    clock: HostClock,
     raw_tx: Sender<RawInput>,
     raw_rx: Receiver<RawInput>,
     stop: Arc<AtomicBool>,
@@ -663,7 +659,9 @@ struct App {
 struct Active {
     renderer: Renderer,
     window: Arc<Window>,
-    frame: u64,
+    /// Predicts each frame's flip from the display's reports; `None` when
+    /// the renderer gets no reports.
+    planner: Option<Planner>,
     kind: ActiveKind,
 }
 
@@ -687,6 +685,12 @@ struct ActiveRun {
     prewarmed_size: (u32, u32),
     robot: Option<Robot>,
     snapshot_frame: Option<u64>,
+    /// Stops the fake scanner once the stimulus is over, as a scan
+    /// programmed to match the experiment would.
+    simulator_stop: Arc<AtomicBool>,
+    /// Once the run is over: keep drawing until the last frames' reports are
+    /// in, or until this time, then save.
+    drain_until: Option<Instant>,
 }
 
 /// The simulated participant.
@@ -720,8 +724,68 @@ struct TimingTest {
     start: Option<f64>,
     last: Option<f64>,
     intervals: Vec<f64>,
-    /// (frame, time, interval, photodiode) for the frames.tsv log.
-    frames: Vec<(u64, f64, f64, bool)>,
+    /// Every frame of the test, for the report and the frames.tsv log.
+    frames: Vec<TestFrame>,
+    /// Once the time is up: keep drawing until the last reports are in, or
+    /// until this time.
+    drain_until: Option<Instant>,
+}
+
+struct TestFrame {
+    index: u64,
+    /// Run-clock time it was acquired, and the gap since the previous one.
+    time: f64,
+    interval: f64,
+    photodiode: bool,
+    report: Report,
+}
+
+impl TimingTest {
+    /// The display's report on frame `index` (`None`: never shown).
+    fn presented(&mut self, index: u64, at: Option<f64>) {
+        if let Some(f) = self.frames.get_mut(index as usize).filter(|f| f.index == index)
+            && f.report == Report::Pending
+        {
+            f.report = at.map_or(Report::NotShown, Report::Shown);
+        }
+    }
+
+    fn waiting_for_reports(&self) -> bool {
+        self.frames.iter().any(|f| f.report == Report::Pending)
+    }
+
+    /// Print the statistics and save the frame log.
+    fn finish(&mut self) {
+        for f in &mut self.frames {
+            if f.report == Report::Pending {
+                f.report = Report::Missing;
+            }
+        }
+        let feedback = self.frames.first().is_some_and(|f| f.report != Report::Off);
+        let shown_gaps: Vec<f64> = self
+            .frames
+            .windows(2)
+            .filter_map(|w| Some(w[1].report.presented()? - w[0].report.presented()?))
+            .collect();
+        if feedback {
+            let count = |r: fn(&Report) -> bool| self.frames.iter().filter(|f| r(&f.report)).count();
+            println!("   timed by      the display's own reports of when each frame was on screen");
+            println!(
+                "   reports       {} shown · {} never shown · {} no report",
+                count(|r| matches!(r, Report::Shown(_))),
+                count(|r| *r == Report::NotShown),
+                count(|r| *r == Report::Missing),
+            );
+            report_timing(self.frames.len(), &shown_gaps, self.rig.display.expected_hz);
+        } else {
+            println!("   timed by      when each frame buffer came back (no reports from the display)");
+            report_timing(self.frames.len(), &self.intervals, self.rig.display.expected_hz);
+        }
+        match write_timing_log(&self.rig, &self.frames) {
+            Ok(path) => println!("   log           {}", dim(&path.display().to_string())),
+            Err(e) => println!("{} couldn't write the frame log: {e:#}", yellow("warning:")),
+        }
+    }
 }
 
 impl App {
@@ -781,6 +845,17 @@ impl App {
         }
         let monitor_hz =
             monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()).map(|mhz| mhz as f64 / 1000.0);
+        let hz = rig.display.expected_hz.or(monitor_hz).unwrap_or(60.0);
+        // The planner starts from that rate and measures the real one from
+        // the display's reports while the instructions are up.
+        let planner = renderer.has_feedback().then(|| Planner::new(planner::Config::new(1.0 / hz)));
+        if let Some(reason) = renderer.no_feedback_reason() {
+            self.console.message(&format!(
+                "{} the display won't report when frames reach the screen ({reason}); flip times \
+                 are estimated from when each frame buffer comes back",
+                yellow("warning:")
+            ));
+        }
 
         let kind = match mode {
             Mode::TimingTest { rig, seconds } => ActiveKind::TimingTest(TimingTest {
@@ -790,11 +865,11 @@ impl App {
                 last: None,
                 intervals: Vec::new(),
                 frames: Vec::new(),
+                drain_until: None,
             }),
             Mode::Run(setup) => {
                 let setup = Box::new(setup);
                 renderer.preload_images(&setup.timeline.images)?;
-                let hz = setup.rig.display.expected_hz.or(monitor_hz).unwrap_or(60.0);
 
                 // Provenance for run.json.
                 let started_wall = chrono::Local::now();
@@ -815,6 +890,11 @@ impl App {
                     "surface_format": format!("{:?}", renderer.format()),
                     "monitor": monitor.as_ref().and_then(|m| m.name()),
                     "monitor_refresh_hz": monitor_hz,
+                    "frame_timing": if renderer.has_feedback() {
+                        "presented: onsets are the display's reports of when frames were on screen"
+                    } else {
+                        "estimated: a frame's flip is taken as when the next frame was acquired"
+                    },
                     "window_pixels": [size.width, size.height],
                     "scale_factor": window.scale_factor(),
                     "fullscreen": setup.rig.display.fullscreen,
@@ -868,6 +948,15 @@ impl App {
 
                 let mut run =
                     Run::new(setup.exp, setup.timeline.clone(), hz, setup.rig.photodiode.flash_frames);
+                if renderer.has_feedback() {
+                    run.enable_feedback();
+                }
+                // From now on Onset hears real pulses, so it can tell the
+                // tail of a scan that's already under way from a new one.
+                // A simulated scanner is Onset's own, so it needs no check.
+                if setup.simulate_tr.is_none() {
+                    run.ready(self.secs(Instant::now()));
+                }
                 let scenes = run.all_scenes();
                 let robot = setup.robot.then(|| Robot {
                     rng: onset::rng::Rng::new(setup.timeline.seed ^ 0x5eed),
@@ -886,10 +975,12 @@ impl App {
                     prewarmed_size: (0, 0),
                     robot,
                     snapshot_frame: None,
+                    simulator_stop: Arc::new(AtomicBool::new(false)),
+                    drain_until: None,
                 }))
             }
         };
-        Ok(Active { renderer, window, frame: 0, kind })
+        Ok(Active { renderer, window, planner, kind })
     }
 
     /// Map a raw key/character to a run input according to the rig.
@@ -926,9 +1017,13 @@ impl App {
             }
             RawInput::Key { t, source, raw } => {
                 let time = t.saturating_duration_since(epoch).as_secs_f64();
-                let (input, kind, label) = Self::classify(&ar.setup.rig, source, &raw);
-                if let Some(input) = input {
-                    ar.run.input(input, time);
+                let (input, kind, mut label) = Self::classify(&ar.setup.rig, source, &raw);
+                if let Some(input) = input
+                    && ar.run.input(input, time) == InputUse::PreviousScan
+                {
+                    // Still a real pulse (kind "trigger", so timing checks
+                    // can match it), but not one of this run's.
+                    label = "previous-scan".into();
                 }
                 if let Some(log) = &ar.log {
                     let _ = log.send(LogMsg::Input(output::InputRecord {
@@ -1031,7 +1126,9 @@ impl App {
         }
 
         let epoch = self.epoch;
+        let clock = self.clock;
         let Some(active) = &mut self.state else { return };
+        collect_feedback(active, &clock, epoch);
 
         // Prepare all text before the run (and again if the window resized).
         if let ActiveKind::Run(ar) = &mut active.kind {
@@ -1042,6 +1139,16 @@ impl App {
         }
 
         let Some(frame) = active.renderer.acquire() else {
+            // No frame, but time goes on: give up on old reports, end a hold
+            // once the scanner stops, and save a run that's over.
+            if let ActiveKind::Run(ar) = &mut active.kind {
+                ar.run.update(epoch.elapsed().as_secs_f64());
+                if let Some(result) = after_frame(ar, &self.writer, &mut self.console) {
+                    self.result = Some(result);
+                    el.exit();
+                    return;
+                }
+            }
             let since = *self.stalled_since.get_or_insert_with(Instant::now);
             // Minimized or hidden mid-session: put the window back.
             let restore_due = self.last_restore.is_none_or(|t| t.elapsed() > Duration::from_millis(500));
@@ -1068,14 +1175,33 @@ impl App {
             self.stall_warned = false;
             self.console.message(&format!("{} display is updating again", green("✓")));
         }
-        // The moment the display accepted a new frame: the previous one just flipped.
-        let now = Instant::now().saturating_duration_since(epoch).as_secs_f64();
-        let index = active.frame;
-        active.frame += 1;
+        // The moment the display accepted a new frame (run clock).
+        let now = frame.acquired.saturating_duration_since(epoch).as_secs_f64();
+        let index = frame.id;
+        // Which refresh this frame will land on, and when that is, from the
+        // display's reports so far (run clock). Only once the planner trusts
+        // its vsync grid (enough reports, a period close to the nominal one);
+        // until then the run assumes one period after the acquire.
+        let predicted_flip = active.planner.as_mut().and_then(|planner| {
+            let host_now = clock.instant_to_host(frame.acquired);
+            planner.expire(host_now);
+            let plan = planner.begin_frame(host_now);
+            // The renderer and the planner each count every frame from 0, so
+            // the display's reports (renderer ids) find the right record.
+            debug_assert_eq!(plan.id, frame.id, "renderer and planner frame counts drifted apart");
+            let host = planner.vsync_time(plan.target_vsync).filter(|_| planner.is_warmed_up())?;
+            clock.secs_since(epoch, host)
+        });
 
         match &mut active.kind {
             ActiveKind::Run(ar) => {
-                let plan = ar.run.frame(index, now);
+                if let Some(planner) = &active.planner
+                    && ar.run.t0.is_none()
+                {
+                    let measured = planner.measured_period().filter(|_| planner.is_warmed_up());
+                    ar.run.set_measured_period(measured.map(|m| m.period_s));
+                }
+                let plan = ar.run.frame(index, now, predicted_flip);
                 let photodiode = ar.setup.rig.photodiode.enabled.then_some(plan.photodiode);
                 // Debugging/documentation aid: save each event's first frame.
                 // (Slow: never set ONSET_SNAPSHOTS for a real session.)
@@ -1115,7 +1241,7 @@ impl App {
                             1.5,
                             "sim".into(),
                             self.raw_tx.clone(),
-                            self.stop.clone(),
+                            ar.simulator_stop.clone(),
                         );
                         self.console
                             .message(&format!("{} fake scanner starts in 1.5 s (TR {tr} s)", dim("·")));
@@ -1131,6 +1257,17 @@ impl App {
                         "{} trigger received, run started · display {hz:.3} Hz",
                         green("▶")
                     ));
+                    if let Some(planner) = &active.planner
+                        && !planner.is_warmed_up()
+                    {
+                        self.console.message(&format!(
+                            "{} the display had sent only {} usable frame reports when the run started \
+                             ({} needed): the first frames' flips are predicted from the CPU clock",
+                            yellow("note:"),
+                            planner.feedback_points(),
+                            planner::WARM_UP_POINTS
+                        ));
+                    }
                     if let Some(expected) = ar.setup.rig.display.expected_hz {
                         if ((hz - expected) / expected).abs() > 0.01 && !ar.warned_hz {
                             ar.warned_hz = true;
@@ -1141,25 +1278,27 @@ impl App {
                         }
                     }
                 }
-                if let Some(log) = &ar.log {
-                    for f in ar.run.take_frames() {
-                        let _ = log.send(LogMsg::Frame(f));
-                    }
-                    for r in ar.run.take_records() {
-                        let _ = log.send(LogMsg::Event(r));
-                    }
-                }
                 if ar.last_status.elapsed() > Duration::from_millis(250) {
                     ar.last_status = Instant::now();
                     self.console.update(&ar.run.status());
                 }
-                if let Phase::Done(reason) = ar.run.phase {
-                    let result = finish_run(ar, reason, &self.writer, &mut self.console);
+                if let Some(result) = after_frame(ar, &self.writer, &mut self.console) {
                     self.result = Some(result);
                     el.exit();
                 }
             }
             ActiveKind::TimingTest(tt) => {
+                if let Some(until) = tt.drain_until {
+                    // Time's up: plain black frames (not part of the test)
+                    // until the display has reported on the last ones.
+                    let black = onset::scene::Scene { background: onset::color::Color::BLACK, items: vec![] };
+                    active.renderer.draw(frame, &black, tt.rig.photodiode.enabled.then_some(false));
+                    if !tt.waiting_for_reports() || Instant::now() >= until {
+                        tt.finish();
+                        el.exit();
+                    }
+                    return;
+                }
                 let start = *tt.start.get_or_insert(now);
                 if let Some(last) = tt.last {
                     tt.intervals.push(now - last);
@@ -1167,7 +1306,13 @@ impl App {
                 tt.last = Some(now);
                 let on = index % 2 == 0;
                 let interval = tt.last.map_or(0.0, |_| *tt.intervals.last().unwrap_or(&0.0));
-                tt.frames.push((index, now, interval, on && tt.rig.photodiode.enabled));
+                tt.frames.push(TestFrame {
+                    index,
+                    time: now,
+                    interval,
+                    photodiode: on && tt.rig.photodiode.enabled,
+                    report: if active.planner.is_some() { Report::Pending } else { Report::Off },
+                });
                 let scene = onset::scene::Scene {
                     background: onset::color::Color::BLACK,
                     items: vec![onset::scene::Item::Rect {
@@ -1181,15 +1326,89 @@ impl App {
                 let photodiode = tt.rig.photodiode.enabled.then_some(on);
                 active.renderer.draw(frame, &scene, photodiode);
                 if now - start >= tt.seconds {
-                    report_timing(&tt.intervals, tt.rig.display.expected_hz);
-                    match write_timing_log(&tt.rig, &tt.frames) {
-                        Ok(path) => println!("   log           {}", dim(&path.display().to_string())),
-                        Err(e) => println!("{} couldn't write the frame log: {e:#}", yellow("warning:")),
+                    if active.planner.is_some() {
+                        tt.drain_until = Some(Instant::now() + Duration::from_secs_f64(FEEDBACK_TIMEOUT_S));
+                    } else {
+                        tt.finish();
+                        el.exit();
                     }
-                    el.exit();
                 }
             }
         }
+    }
+}
+
+/// Hand the display's reports of frames reaching the screen to the planner,
+/// and the ones it accepts to the run (or timing test), in run-clock seconds.
+fn collect_feedback(active: &mut Active, clock: &HostClock, epoch: Instant) {
+    let Active { renderer, planner: Some(planner), kind, .. } = active else { return };
+    for (id, host_s) in renderer.presented() {
+        planner.on_feedback(id, host_s);
+        // `Some(None)`: never shown. Reports the planner rejects as
+        // impossible are left to time out, like a missing one.
+        let at = match planner.feedback(id) {
+            Some(Feedback::Shown { presented_s, .. }) => Some(clock.secs_since(epoch, presented_s)),
+            Some(Feedback::NotShown) => Some(None),
+            _ => None,
+        };
+        let Some(at) = at else { continue };
+        match kind {
+            ActiveKind::Run(ar) => ar.run.presented(id, at),
+            ActiveKind::TimingTest(tt) => tt.presented(id, at),
+        }
+    }
+}
+
+/// After each tick of a run: tell the operator what the run noticed, stop
+/// the fake scanner once the stimulus is over, send finished records to the
+/// log, and once the run is over and its last reports are in (or have been
+/// waited for long enough), save it. Returns the result once saved.
+fn after_frame(ar: &mut ActiveRun, writer: &WriterSlot, console: &mut console::Status) -> Option<Result<()>> {
+    for notice in ar.run.take_notices() {
+        console.message(&notice_text(notice));
+    }
+    if !matches!(ar.run.phase, Phase::Instructions | Phase::Waiting | Phase::Running) {
+        ar.simulator_stop.store(true, Ordering::Relaxed);
+    }
+    if let Some(log) = &ar.log {
+        for f in ar.run.take_frames() {
+            let _ = log.send(LogMsg::Frame(f));
+        }
+        for r in ar.run.take_records() {
+            let _ = log.send(LogMsg::Event(r));
+        }
+    }
+    let Phase::Done(reason) = ar.run.phase else { return None };
+    let until =
+        *ar.drain_until.get_or_insert_with(|| Instant::now() + Duration::from_secs_f64(FEEDBACK_TIMEOUT_S));
+    if ar.run.waiting_for_reports() && Instant::now() < until {
+        return None;
+    }
+    Some(finish_run(ar, reason, writer, console))
+}
+
+fn notice_text(notice: Notice) -> String {
+    match notice {
+        Notice::PulseIgnored { quiet_s } => format!(
+            "{} the scanner was already sending pulses when Onset got ready (an earlier scan still \
+             running?). Ignoring them: the run starts on the first pulse after {quiet_s:.1} s without any.",
+            yellow("pulse ignored:")
+        ),
+        Notice::ReadyAgain => {
+            format!("{} the earlier scan has stopped; the next pulse starts the run", green("✓"))
+        }
+        Notice::ScanQuiet { last_pulse, quiet_s } => format!(
+            "{} no scanner pulse for {quiet_s:.1} s (the last was at {last_pulse:.1} s): has the scan \
+             stopped? The stimulus carries on; Esc stops it.",
+            yellow("warning:")
+        ),
+        Notice::Holding { quiet_s } => format!(
+            "{} stimulus finished, but the scanner is still sending pulses: holding the final screen until \
+             it stops ({quiet_s:.1} s without a pulse). Esc stops waiting.",
+            green("■")
+        ),
+        Notice::ScannerStopped => format!("{} the scanner has stopped", green("✓")),
+        Notice::HoldStopped => format!("{} stopped waiting for the scanner", dim("·")),
     }
 }
 
@@ -1219,7 +1438,11 @@ fn finish_run(
     writer: &WriterSlot,
     console: &mut console::Status,
 ) -> Result<()> {
+    // Whatever is still waiting for a report is estimated now.
+    ar.run.flush();
+    ar.simulator_stop.store(true, Ordering::Relaxed);
     let status = ar.run.status();
+    let coverage = ar.run.scan_coverage();
     if let Some(log) = ar.log.take() {
         for f in ar.run.take_frames() {
             let _ = log.send(LogMsg::Frame(f));
@@ -1233,7 +1456,11 @@ fn finish_run(
             "duration_wall_s": (chrono::Local::now() - ar.started_wall).num_milliseconds() as f64 / 1000.0,
             "measured_refresh_hz": 1.0 / ar.run.period(),
             "missed_frames": ar.run.missed_frames,
+            "flip_estimates": ar.run.flip_estimates,
             "triggers": ar.run.triggers.len(),
+            "ignored_triggers": ar.run.ignored_triggers,
+            "scan_until_s": coverage.map(|c| c.scanned_until),
+            "scan_stopped_early": coverage.map(|c| c.stopped_early()),
             "responses": status.responses,
             "correct": status.correct,
             "scored": status.scored,
@@ -1253,9 +1480,37 @@ fn finish_run(
     println!("\n{headline}");
     let t = status.t.unwrap_or(0.0).max(0.0);
     println!("   duration      {}  ({} triggers)", fmt_duration(t), status.triggers);
+    if ar.run.ignored_triggers > 0 {
+        println!(
+            "   ignored       {} pulses from a scan already under way before the run",
+            ar.run.ignored_triggers
+        );
+    }
+    if let Some(c) = coverage {
+        if c.stopped_early() && reason == EndReason::Completed {
+            println!(
+                "{} the scan stopped at {:.1} s (last pulse + one TR of {:.2} s), before the stimulus ended at \
+                 {:.1} s: the end of the run wasn't scanned",
+                yellow("warning:"),
+                c.scanned_until,
+                c.tr,
+                c.stimulus_end
+            );
+        }
+    }
     let mf = ar.run.missed_frames;
-    let frames_line = format!("{mf} missed frames · {:.3} Hz", 1.0 / ar.run.period());
+    let timed_by = if ar.run.has_feedback() { "timed by the display" } else { "estimated from the CPU" };
+    let frames_line = format!("{mf} missed frames · {:.3} Hz · {timed_by}", 1.0 / ar.run.period());
     println!("   display       {}", if mf == 0 { green(&frames_line) } else { yellow(&frames_line) });
+    if ar.run.has_feedback() && ar.run.flip_estimates > 0 {
+        println!(
+            "   {}",
+            yellow(&format!(
+                "{} onsets/ends estimated: the display didn't report those frames",
+                ar.run.flip_estimates
+            ))
+        );
+    }
     if status.scored > 0 {
         println!(
             "   accuracy      {}/{} ({:.0}%)",
@@ -1275,26 +1530,48 @@ fn finish_run(
 
 /// Save timing-test frames in the same format as a run's frames.tsv, so
 /// they can be compared with photodiode recordings.
-fn write_timing_log(rig: &Rig, frames: &[(u64, f64, f64, bool)]) -> Result<PathBuf> {
+fn write_timing_log(rig: &Rig, frames: &[TestFrame]) -> Result<PathBuf> {
     let dir = rig.output.dir.join("timing-tests");
     std::fs::create_dir_all(&dir)?;
     let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
     let path = dir.join(format!("timingtest_{stamp}_frames.tsv"));
-    let mut out = String::from("frame\ttime\tt\tinterval_ms\tmissed\tphase\tevent\tphotodiode\n");
-    let t0 = frames.first().map_or(0.0, |f| f.1);
-    for (index, time, interval, on) in frames {
+    let mut out = String::from(
+        "frame\ttime\tt\tinterval_ms\tmissed\tphase\tevent\tphotodiode\tpresented\tpresented_t\treport\n",
+    );
+    let t0 = frames.first().map_or(0.0, |f| f.time);
+    // Refreshes missed before a frame: from the gap since the frame before
+    // it, when the display reported both, rounded to whole refreshes.
+    let mut gaps: Vec<f64> =
+        frames.windows(2).filter_map(|w| Some(w[1].report.presented()? - w[0].report.presented()?)).collect();
+    gaps.sort_by(f64::total_cmp);
+    let period = gaps.get(gaps.len() / 2).copied();
+    let mut prev: Option<f64> = None;
+    for f in frames {
+        let presented = f.report.presented();
+        let missed = match (presented, prev, period) {
+            (Some(p), Some(q), Some(period)) => (((p - q) / period).round() as i64 - 1).max(0),
+            _ => 0,
+        };
+        prev = presented;
+        let (abs, rel) = match presented {
+            Some(p) => (format!("{p:.6}"), format!("{:.6}", p - t0)),
+            None => ("n/a".into(), "n/a".into()),
+        };
         out.push_str(&format!(
-            "{index}\t{time:.6}\t{:.6}\t{:.3}\t0\ttiming-test\tn/a\t{}\n",
-            time - t0,
-            interval * 1000.0,
-            *on as u8
+            "{}\t{:.6}\t{:.6}\t{:.3}\t{missed}\ttiming-test\tn/a\t{}\t{abs}\t{rel}\t{}\n",
+            f.index,
+            f.time,
+            f.time - t0,
+            f.interval * 1000.0,
+            f.photodiode as u8,
+            f.report.label()
         ));
     }
     std::fs::write(&path, out)?;
     Ok(path)
 }
 
-fn report_timing(intervals: &[f64], expected: Option<f64>) {
+fn report_timing(frames: usize, intervals: &[f64], expected: Option<f64>) {
     if intervals.len() < 10 {
         println!("{}", yellow("too few frames to measure"));
         return;
@@ -1309,7 +1586,7 @@ fn report_timing(intervals: &[f64], expected: Option<f64>) {
         .filter(|&&i| i > 1.5 * median)
         .map(|&i| ((i / median).round() as u64).saturating_sub(1))
         .sum();
-    println!("   frames        {}", intervals.len() + 1);
+    println!("   frames        {frames}");
     println!("   refresh       {:.3} Hz (median interval {:.3} ms)", 1.0 / median, median * 1000.0);
     println!(
         "   jitter        mean {:.3} ms · SD {:.3} ms · min {:.3} · max {:.3}",
@@ -1339,7 +1616,7 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, _el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => self.operator(Input::Abort, Instant::now()),
             WindowEvent::Focused(focused) => self.focus_changed(focused),
@@ -1372,11 +1649,8 @@ impl ApplicationHandler for App {
                     }
                     _ => {}
                 }
-                let done =
-                    matches!(&self.state, Some(Active { kind: ActiveKind::Run(ar), .. }) if ar.run.is_done());
-                if done {
-                    el.exit();
-                }
+                // A run that's now over is saved by the next tick, once the
+                // display has reported its last frames.
             }
             _ => {}
         }
@@ -1395,7 +1669,13 @@ impl ApplicationHandler for App {
         if let Some(Active { kind: ActiveKind::Run(ar), .. }) = &mut self.state {
             if ar.log.is_some() {
                 ar.run.input(Input::Abort, self.epoch.elapsed().as_secs_f64());
-                let r = finish_run(ar, EndReason::Aborted, &self.writer, &mut self.console);
+                // A run that had completed (e.g. while holding the final
+                // screen) stays completed.
+                let reason = match ar.run.phase {
+                    Phase::Done(reason) => reason,
+                    _ => EndReason::Aborted,
+                };
+                let r = finish_run(ar, reason, &self.writer, &mut self.console);
                 if self.result.is_none() {
                     self.result = Some(r);
                 }

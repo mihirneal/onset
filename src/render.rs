@@ -1,10 +1,19 @@
 //! Drawing scenes with wgpu.
 //!
 //! Frame pacing lives in the caller: `acquire()` blocks until the display is
-//! ready for a new frame (vsync), the caller timestamps that moment, decides
-//! what to show, then calls `draw()` which submits and presents.
+//! ready for a new frame (vsync) and returns it with the moment it was
+//! handed over; the caller decides what to show, then calls `draw()` which
+//! submits and presents.
+//!
+//! When the display gave us the frame is only a rough, CPU-side hint of
+//! where it is: under the macOS compositor it jitters by several
+//! milliseconds. So `draw()` presents through Metal ourselves (`present.rs`)
+//! and Metal later reports when each frame really reached the screen. Drain
+//! those reports with `presented()`. If the Metal path isn't available,
+//! wgpu presents as usual and there are no reports (`has_feedback()`).
 
 use crate::color::Color;
+use crate::present::{Drawable, MetalPresenter};
 use crate::rig::Corner;
 use crate::scene::{Item, Scene};
 use anyhow::{Context, Result, anyhow};
@@ -15,7 +24,31 @@ use glyphon::{
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, Sender, TryIter, channel};
+use std::time::Instant;
 use winit::window::Window;
+
+/// One report of a frame reaching the screen: `(frame id, presented host
+/// seconds)`. The time is 0.0 if Metal says the frame was never shown.
+pub type Presented = (u64, f64);
+
+/// A frame buffer to draw into, from `Renderer::acquire`.
+#[must_use = "draw every frame you acquire; a frame buffer that isn't drawn is never shown"]
+pub struct Frame {
+    /// Counts successful acquires from 0. Metal's report for this frame
+    /// comes back with the same number.
+    pub id: u64,
+    /// When the display handed the frame buffer over (read right after the wait).
+    pub acquired: Instant,
+    target: Target,
+}
+
+enum Target {
+    /// wgpu presents it (no report of when it reached the screen).
+    Wgpu(wgpu::SurfaceTexture),
+    /// We present it through Metal, which reports when it was on screen.
+    Metal(Drawable),
+}
 
 const MAX_SHAPES: usize = 4096;
 const MAX_IMAGES: usize = 256;
@@ -85,6 +118,17 @@ pub struct Renderer {
 
     pub scale: f32,
     pub photodiode: Option<PhotodiodePatch>,
+
+    /// Our own present step, with Metal's report of when each frame was on
+    /// screen. `None` if that isn't available; then wgpu presents.
+    presenter: Option<MetalPresenter>,
+    /// Why there's no presenter, for the operator.
+    no_feedback_reason: Option<String>,
+    // Unbounded on purpose: Metal's thread must never wait on us.
+    feedback_tx: Sender<Presented>,
+    feedback_rx: Receiver<Presented>,
+    present_failed: bool,
+    next_id: u64,
     window: Arc<Window>,
 }
 
@@ -135,6 +179,16 @@ impl Renderer {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
+        // SAFETY: `config` is exactly what the surface was just configured
+        // with, and every later configure (`resize`) calls `after_configure`
+        // with its configuration straight after. When the presenter exists,
+        // wgpu's own acquire path (which also reconfigures) is never used.
+        let (presenter, no_feedback_reason) =
+            match unsafe { MetalPresenter::new(&surface, &device, &queue, &config) } {
+                Ok(p) => (Some(p), None),
+                Err(e) => (None, Some(e.to_string())),
+            };
+        let (feedback_tx, feedback_rx) = channel();
 
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
@@ -318,8 +372,30 @@ impl Renderer {
             text_cache: HashMap::new(),
             scale: window.scale_factor() as f32,
             photodiode: None,
+            presenter,
+            no_feedback_reason,
+            feedback_tx,
+            feedback_rx,
+            present_failed: false,
+            next_id: 0,
             window,
         })
+    }
+
+    /// Whether Metal reports when each frame reached the screen
+    /// (`presented()`). If not, `no_feedback_reason` says why.
+    pub fn has_feedback(&self) -> bool {
+        self.presenter.is_some()
+    }
+
+    pub fn no_feedback_reason(&self) -> Option<&str> {
+        self.no_feedback_reason.as_deref()
+    }
+
+    /// Reports of frames that reached the screen since the last call, in
+    /// whatever order Metal sent them. Never blocks.
+    pub fn presented(&self) -> TryIter<'_, Presented> {
+        self.feedback_rx.try_iter()
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
@@ -339,6 +415,12 @@ impl Renderer {
         self.scale = scale;
         self.text_cache.clear();
         self.surface.configure(&self.device, &self.config);
+        if let Some(presenter) = &mut self.presenter {
+            // configure() resets the layer's settings; put ours back.
+            // SAFETY: `self.config` is exactly what the surface was just
+            // configured with.
+            unsafe { presenter.after_configure(&self.config) };
+        }
     }
 
     /// Load and upload images before the run so nothing is decoded mid-run.
@@ -440,10 +522,15 @@ impl Renderer {
         }
     }
 
-    /// Block until the display can take a new frame. Returns None if the
-    /// surface needed reconfiguring (just call again next loop).
-    pub fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
+    /// Block until the display can take a new frame. Returns None if there's
+    /// no frame this time (the window is hidden, or the surface needed
+    /// reconfiguring): just call again next loop.
+    pub fn acquire(&mut self) -> Option<Frame> {
+        if let Some(presenter) = &self.presenter {
+            let drawable = presenter.next_drawable().ok()?;
+            return Some(self.new_frame(Target::Metal(drawable)));
+        }
+        let texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => None,
@@ -462,15 +549,46 @@ impl Renderer {
                 eprintln!("onset: GPU validation error acquiring a frame");
                 None
             }
-        }
+        }?;
+        Some(self.new_frame(Target::Wgpu(texture)))
     }
 
-    /// Draw `scene` into `frame` and present it.
-    pub fn draw(&mut self, frame: wgpu::SurfaceTexture, scene: &Scene, photodiode_on: Option<bool>) {
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        self.render_to(&view, scene, photodiode_on);
-        self.window.pre_present_notify();
-        self.queue.present(frame);
+    fn new_frame(&mut self, target: Target) -> Frame {
+        let acquired = Instant::now();
+        let id = self.next_id;
+        self.next_id += 1;
+        Frame { id, acquired, target }
+    }
+
+    /// Draw `scene` into `frame` and present it. With feedback, Metal later
+    /// reports when it reached the screen (`presented()`).
+    pub fn draw(&mut self, frame: Frame, scene: &Scene, photodiode_on: Option<bool>) {
+        match frame.target {
+            Target::Wgpu(texture) => {
+                let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.render_to(&view, scene, photodiode_on);
+                self.window.pre_present_notify();
+                self.queue.present(texture);
+            }
+            Target::Metal(drawable) => {
+                let Some(texture) = self.presenter.as_ref().map(|p| p.wrap(&drawable)) else { return };
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                self.render_to(&view, scene, photodiode_on);
+                // Fine to drop now: wgpu keeps the texture alive until the
+                // GPU is done with it.
+                drop((view, texture));
+                self.window.pre_present_notify();
+                // Straight after render_to's submit, on the same thread, so
+                // the present is queued after the rendering.
+                let Some(presenter) = &self.presenter else { return };
+                if let Err(e) = presenter.present(drawable, frame.id, &self.feedback_tx)
+                    && !self.present_failed
+                {
+                    eprintln!("onset: couldn't put a frame on screen ({e})");
+                    self.present_failed = true;
+                }
+            }
+        }
         self.atlas.trim();
     }
 
