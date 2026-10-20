@@ -24,7 +24,8 @@ key = "t"
 [buttons]
 # raw key = label used in experiments. Two pads, two buttons each, checked by
 # pressing them on 2026-10-20: right index "y", right middle "b",
-# left index "r", left middle "g". The right hand gives 1 and 2, so two-button
+# left index "r", left middle "g". The keys belong to the pad: keep the
+# r/g pad in the left hand and the y/b pad in the right, or index and middle swap. The right hand gives 1 and 2, so two-button
 # tasks work one-handed; the left hand gets its own labels so presses from the
 # two hands never mix. For a left/right-hand task, use "1" and "3".
 "y" = "1"
