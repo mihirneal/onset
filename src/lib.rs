@@ -4,10 +4,13 @@
 //! plain logic that's tested without a screen or a scanner. `main.rs` adds
 //! the window, frame loop and command line.
 
+pub mod check_timing;
 pub mod color;
 pub mod experiment;
 pub mod input;
+pub mod make_schedule;
 pub mod output;
+pub mod probe;
 pub mod render;
 pub mod rig;
 pub mod rng;

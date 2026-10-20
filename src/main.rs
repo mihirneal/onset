@@ -74,6 +74,12 @@ enum Cmd {
     Displays,
     /// List serial ports (for the rig's `[trigger] port`).
     Ports,
+    /// Record the photodiode/trigger probe (Arduino) to a TSV file.
+    Probe(onset::probe::Args),
+    /// Compare logged onsets with photodiode-measured light onsets.
+    CheckTiming(onset::check_timing::Args),
+    /// Write an experiment's schedule TSV from a folder of images (see [schedule.generate]).
+    MakeSchedule(onset::make_schedule::Args),
 }
 
 #[derive(clap::Args)]
@@ -126,6 +132,9 @@ fn main() {
         Cmd::TimingTest { rig, seconds, windowed } => cmd_timing_test(rig.as_deref(), seconds, windowed),
         Cmd::Displays => cmd_displays(),
         Cmd::Ports => cmd_ports(),
+        Cmd::Probe(args) => onset::probe::run(args),
+        Cmd::CheckTiming(args) => onset::check_timing::run(args),
+        Cmd::MakeSchedule(args) => onset::make_schedule::run(args),
     };
     if let Err(e) = result {
         eprintln!("{} {e:#}", red("error:"));
@@ -1100,7 +1109,7 @@ fn finish_run(
 }
 
 /// Save timing-test frames in the same format as a run's frames.tsv, so
-/// `tools/analyze_timing.py` can compare them with photodiode recordings.
+/// they can be compared with photodiode recordings.
 fn write_timing_log(rig: &Rig, frames: &[(u64, f64, f64, bool)]) -> Result<PathBuf> {
     let dir = rig.output.dir.join("timing-tests");
     std::fs::create_dir_all(&dir)?;

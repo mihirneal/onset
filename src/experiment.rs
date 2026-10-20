@@ -265,10 +265,132 @@ pub struct ScheduleDef {
     /// Delay before the first trial when trials run back to back.
     #[serde(default)]
     pub start_delay: f64,
+    /// How `onset make-schedule` writes `file` from a folder of images.
+    pub generate: Option<GenerateDef>,
 }
 
 fn one() -> u32 {
     1
+}
+
+/// `[schedule.generate]`: a design for `onset make-schedule`, which writes
+/// the schedule file from a folder of images. Running ignores it.
+///
+/// Trials sit in fixed slots (`start + k * slot` seconds after t = 0); some
+/// slots stay blank. With `repeat_prob`, some trials show an image seen
+/// before ("old") and the others unseen ones ("new").
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GenerateDef {
+    /// Folder of PNG/JPEG images, relative to the experiment file.
+    pub images: Option<String>,
+    /// Onset of the first slot (s).
+    #[serde(default)]
+    pub start: f64,
+    /// Seconds from one slot's onset to the next.
+    pub slot: f64,
+    /// Slots per run.
+    pub slots: u32,
+    /// Image trials per run (default: every slot). A list cycles through
+    /// runs: blanks are placed for its largest entry, and runs with fewer
+    /// trials leave their last image slots blank.
+    pub trials: Option<Counts>,
+    /// Blank slots split the image trials into stretches of `[min, max]`
+    /// trials. Default: blanks may fall anywhere.
+    pub stretch: Option<[u32; 2]>,
+    /// Chance that a trial shows an image seen before.
+    #[serde(default)]
+    pub repeat_prob: f64,
+    /// The `answer` column for unseen images.
+    #[serde(default = "default_new_answer")]
+    pub new_answer: String,
+    /// The `answer` column for images seen before.
+    #[serde(default = "default_old_answer")]
+    pub old_answer: String,
+    /// Copy the number that follows `prefix` in each file name into its own
+    /// column, e.g. an image database's ID.
+    pub name_id: Option<NameId>,
+}
+
+/// `63` or `[63, 62]`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Counts {
+    One(u32),
+    Cycle(Vec<u32>),
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NameId {
+    pub column: String,
+    pub prefix: String,
+}
+
+fn default_new_answer() -> String {
+    "1".into()
+}
+fn default_old_answer() -> String {
+    "2".into()
+}
+
+impl GenerateDef {
+    fn trial_counts(&self) -> Vec<u32> {
+        match &self.trials {
+            None => vec![self.slots],
+            Some(Counts::One(n)) => vec![*n],
+            Some(Counts::Cycle(v)) => v.clone(),
+        }
+    }
+
+    /// Image trials in run `run` (1-based).
+    pub fn trials_in_run(&self, run: u32) -> u32 {
+        let counts = self.trial_counts();
+        counts[(run.max(1) as usize - 1) % counts.len()]
+    }
+
+    /// The most image trials any run has (what blanks are placed for).
+    pub fn max_trials(&self) -> u32 {
+        self.trial_counts().into_iter().max().unwrap_or(0)
+    }
+
+    fn check(&self) -> Result<()> {
+        let at = "[schedule.generate]";
+        if !(self.slot > 0.0 && self.slot.is_finite() && self.start.is_finite()) {
+            bail!("{at} slot must be a positive number of seconds and start a number");
+        }
+        if self.slots == 0 {
+            bail!("{at} slots must be at least 1");
+        }
+        let counts = self.trial_counts();
+        if counts.is_empty() || counts.iter().any(|&n| n > self.slots) {
+            bail!("{at} trials must be one or more counts, each at most slots ({})", self.slots);
+        }
+        if !(0.0..=1.0).contains(&self.repeat_prob) {
+            bail!("{at} repeat_prob must be between 0 and 1");
+        }
+        if let Some([lo, hi]) = self.stretch {
+            let (images, stretches) = (self.max_trials(), self.slots - self.max_trials() + 1);
+            if lo == 0 || lo > hi {
+                bail!("{at} stretch must be [min, max] with 1 <= min <= max");
+            }
+            if stretches * lo > images || stretches * hi < images {
+                bail!(
+                    "{at} stretch = [{lo}, {hi}] can't split {images} image trials into {stretches} stretches \
+                     (one more than the {} blank slots): it needs min <= {} and max >= {}",
+                    stretches - 1,
+                    images / stretches,
+                    images.div_ceil(stretches)
+                );
+            }
+        }
+        if let Some(id) = &self.name_id {
+            if id.column.is_empty() || id.prefix.is_empty() {
+                bail!("{at} name_id needs a column and a prefix");
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -327,6 +449,9 @@ impl Experiment {
         }
         if s.repeat == 0 {
             bail!("[schedule] repeat must be at least 1");
+        }
+        if let Some(g) = &s.generate {
+            g.check()?;
         }
         Ok(())
     }

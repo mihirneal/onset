@@ -1,6 +1,0 @@
-# Timing-validation tools (tools/*.py). Not needed to run Onset itself.
-numpy
-pandas
-pyserial      # capture_probe.py
-matplotlib    # optional: analyze_timing.py --plot
-pytest        # optional: running tools/test_analyze_timing.py

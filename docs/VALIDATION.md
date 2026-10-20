@@ -4,13 +4,10 @@ How to show, with a photodiode, that Onset's stimulus onsets are where its logs
 say they are, and how to run the same check on other presentation software.
 
 Hardware and wiring: [`hardware/README.md`](../hardware/README.md).
-Tools: `tools/capture_probe.py` (record the probe), `tools/analyze_timing.py`
-(compare), `tools/test_analyze_timing.py` (self-test with synthetic data).
-
-```sh
-python3 -m pip install -r tools/requirements.txt     # numpy pandas pyserial (+ matplotlib, pytest)
-python3 -m pytest tools/test_analyze_timing.py       # the analysis recovers known lag/jitter
-```
+Commands: `onset probe` records the probe, and `onset check-timing` compares
+the recording with the logs. Both are part of `onset`, so there's nothing
+else to install. `cargo test --test check_timing` checks that the analysis
+recovers a known lag, jitter and clock drift from synthetic data.
 
 ## What is being measured
 
@@ -53,17 +50,17 @@ frames, independent of any experiment.
 1. Use the stimulus PC, display, resolution and refresh rate you'll use in
    the scanner. Fullscreen, display at 100% brightness, notifications off.
 2. Mount the sensor on the patch (hardware/README.md), tune the threshold.
-3. `python3 tools/capture_probe.py --out tt_desk.tsv`
+3. `onset probe --out tt_desk.tsv`
 4. `onset timing-test --seconds 120` (the patch flips white/black every frame).
-5. Ctrl-C the capture, then
-   `python3 tools/analyze_timing.py --probe tt_desk.tsv --timing-test --hz 60 --plot tt_desk.png`
+5. Ctrl-C the probe recording, then
+   `onset check-timing --probe tt_desk.tsv --timing-test --hz 60 --out tt_desk.csv`
 
 Report: `refresh_hz_arduino_clock` (approximate: Arduino clock), flashes,
 `inferred_dropped_frames`, `intervals_longer`, `interval_sd_ms`,
 `interval_dev_max_abs_ms`, and Onset's own console summary.
 
-`onset timing-test` writes no log files, so this test checks frame pacing
-only. Logged-vs-light comparison needs test B.
+`onset timing-test` logs frames but no triggers or events, so this test
+checks frame pacing only. Logged-vs-light comparison needs test B.
 
 Note: some LCDs can't fully switch white↔black in one frame. If the flash
 widths look odd or edges go missing, it's the panel's response time, not
@@ -76,16 +73,16 @@ Goal: Onset's logged onsets match light onsets for a real experiment.
 1. Flash the sketch with `FAKE_TR 1` and set `TR_MS` to your TR. Jumper
    **D9 → D3**. On a Leonardo/Uno R4 also set `FAKE_TR_KEYBOARD 1` so the
    board types `5` on every pulse; otherwise route D9 into your trigger box.
-   (Onset's `--simulate-tr` can't be used: the probe can't see simulated
+   (Onset's `--simulate` can't be used: the probe can't see simulated
    triggers.)
-2. Start the capture: `python3 tools/capture_probe.py --out probe_deskB.tsv`
+2. Start recording: `onset probe --out probe_deskB.tsv`
 3. Run the real experiment in Onset (trigger source keyboard, key `5`). Leave
    the Onset window focused.
-4. After the run, stop the capture and analyse:
+4. After the run, stop the recording and analyse:
 
    ```sh
-   python3 tools/analyze_timing.py --probe probe_deskB.tsv \
-       --run data/sub-XX/onset --stem <stem> --out deskB.csv --plot deskB.png
+   onset check-timing --probe probe_deskB.tsv \
+       --run data/sub-XX/onset --stem <stem> --out deskB.csv
    ```
 
 5. Optional cross-check against Onset's per-frame log:
@@ -109,7 +106,7 @@ physicist/engineer first.
 1. Sketch: `FAKE_TR 0`. Trigger box TTL output → opto-isolator → D3.
 2. Phantom in the scanner; the real sequence for your paradigm, including
    dummy volumes.
-3. Start the capture before starting Onset; stop it after the scan ends.
+3. Start `onset probe` before starting Onset; stop it after the scan ends.
    (It's fine that the probe also records triggers before/after Onset was
    listening — the analysis finds the right alignment.)
 4. Run the paradigm 2–3 times; analyse each run as in test B.
@@ -137,7 +134,7 @@ example.
 5. Analyse:
 
    ```sh
-   python3 tools/analyze_timing.py --probe probe_eprime.tsv \
+   onset check-timing --probe probe_eprime.tsv \
        --eprime export.txt \
        --eprime-onset-col Stimulus.OnsetTime \
        --eprime-trigger-col WaitForScanner.RTTime \
@@ -169,7 +166,8 @@ For each test and run:
 * Frames off: `late_by_a_frame`, `early_by_a_frame`.
 * Dropped frames: photodiode-inferred and Onset-reported.
 * Trigger path: triggers paired, `trigger_residual_sd_ms`, `clock_drift_ppm`.
-* The `--plot` figure (histogram + latency over the run).
+* The per-event table from `--out` (CSV, or TSV for a `.tsv` name), for a
+  histogram of latency and a plot of latency over the run.
 
 ## Pass criteria
 
@@ -184,8 +182,8 @@ For each test and run:
 | Constant lag | measured and reported (mean `latency_ms`, `true_minus_logged_ms`); repeatable within ~1 ms across runs |
 | `planned_error_ms` − mean lag | within 0 … 1 frame (onsets snap to the next refresh) |
 
-`analyze_timing.py` prints PASS/CHECK lines for the first five automatically.
-A CHECK is a prompt to look at the table and plot, not automatically a
+`onset check-timing` prints PASS/CHECK lines for the first five automatically.
+A CHECK is a prompt to look at the per-event table, not automatically a
 failure — e.g. a single late event right after the run starts may be the
 display waking up.
 
