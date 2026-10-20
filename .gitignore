@@ -1,6 +1,24 @@
 /target
-/data
 
-# NSD stimuli may not be redistributed: never commit them
+# Participant data never goes in git: run output, BIDS folders, scanner and
+# physiology files, wherever they end up.
+/data
+/logs
+sub-*/
+*.nii
+*.nii.gz
+*.dcm
+*.IMA
+*.edf
+*.acq
+
+# Licensed or third-party stimulus sets (e.g. COCO-based image sets) may not
+# be redistributed: keep them outside the repo, or in /stimuli/, never committed.
+/stimuli/
 *_nsd[0-9]*.png
 nsd_stimuli.hdf5
+*.hdf5
+*.h5
+
+# Private notes: site details, sessions, plans (never commit)
+CLAUDE.local.md

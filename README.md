@@ -1,12 +1,15 @@
 # Onset
 
-Frame-accurate stimulus presentation for fMRI, written in Rust. An open-source replacement for E-Prime.
+Frame-accurate, open-source stimulus presentation for fMRI and beyond, written in Rust.
+
+Developed and tested at the Center for Advanced Magnetic Resonance Imaging (CAMRI), Baylor College of Medicine, Houston, TX.
 
 - **Experiments are TOML files**, not code. Trial lists come from a TSV, so schedules from optseq2 / AFNI drop straight in.
 - **Scanner-synced timing.** Every onset is scheduled as an absolute time after the first kept trigger, and snaps to the nearest refresh. A late frame can never push the rest of the run off schedule.
 - **Honest logs.** Every frame, trigger, and button press is timestamped. Each event records its planned onset, its measured onset, and the delay between them.
 - **BIDS output.** `sub-01_task-x_run-01_events.tsv` + `events.json` are ready for fMRIPrep, nilearn, FSL, or SPM.
-- **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset; there's a `timing-test` command and an Arduino rig for measuring real display latency.
+- **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset. `onset timing-test` measures frame pacing, and with a small Arduino rig `onset probe` and `onset check-timing` measure when light really appeared, onset by onset.
+- **One program.** Running, checking timing and building schedules are all `onset` commands, with nothing else to install.
 
 ## Quick start
 
@@ -30,7 +33,12 @@ onset schedule examples/flanker/experiment.toml   # print every planned event
 onset timing-test --seconds 10                    # refresh rate, jitter, dropped frames
 onset displays                                    # list monitors for the rig file
 onset ports                                       # list serial ports (trigger boxes)
+onset make-schedule examples/nsd/experiment.toml  # build a trial list from a folder of images
+onset probe --out probe.tsv                       # record the photodiode/trigger probe
+onset check-timing --probe probe.tsv --run data/sub-01/onset   # logged vs measured onsets
 ```
+
+`onset <command> --help` describes each command's options.
 
 ## Examples
 
@@ -38,23 +46,8 @@ onset ports                                       # list serial ports (trigger b
 |---|---|
 | [`examples/flanker`](examples/flanker) | Event-related flanker task: jittered onsets from a TSV, button responses, ✓/✗ feedback |
 | [`examples/checkerboard-localizer`](examples/checkerboard-localizer) | Block-design 8 Hz radial checkerboard vs. fixation |
-| [`examples/nsd`](examples/nsd) | **Natural Scenes Dataset** core run (Allen et al. 2022): 3 s images + 1 s gap, continuous old/new recognition, 7T TR 1.6 s × 188 volumes. Parameters taken from NSD's original Psychtoolbox code. Ships with placeholder images; `make_run.py --images <folder>` builds runs from real NSD images after you accept the NSD terms (they may not be redistributed) |
-| [`examples/nsd-resting`](examples/nsd-resting) | NSD resting-state run, with the instructed-breath cue |
-
-```bash
-python3 examples/nsd/make_run.py --run 1          # regenerate an NSD-style schedule
-onset run examples/nsd/experiment.toml --rig examples/rigs/dev.toml --simulate --robot --sub 01
-```
-
-With real NSD images (after accepting the [NSD terms](https://cvnlab.slite.page/p/IB6BSeW_7o/Terms-and-Conditions); keep them outside this repo):
-
-```bash
-aws s3 sync s3://natural-scenes-dataset/nsddata/stimuli/nsd/shared1000/ ~/nsd/shared1000/ --no-sign-request
-# one schedule per run; --history tracks old/new across runs for this participant
-python3 examples/nsd/make_run.py --run 1 --images ~/nsd/shared1000 \
-    --history ~/nsd/sub-01_seen.txt --out ~/nsd/sub-01/run01.tsv
-onset run examples/nsd/experiment.toml --schedule ~/nsd/sub-01/run01.tsv --rig my-rig.toml --sub 01 --run 1
-```
+| [`examples/nsd`](examples/nsd) | Image paradigm modeled on the Natural Scenes Dataset core run: 3 s images + 1 s gap, continuous old/new recognition. Ships with placeholder images; see its [README](examples/nsd/README.md) for using real images |
+| [`examples/nsd-resting`](examples/nsd-resting) | Resting-state run with an instructed-breath cue |
 
 `--schedule FILE` (on `run`, `validate` and `schedule`) swaps in a different trial list without editing the experiment; a copy is saved with the run's logs.
 
@@ -62,8 +55,8 @@ Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. Th
 
 ## At the scanner
 
-1. Copy `examples/rigs/scanner-forp.toml` and set `[display] monitor` to the projector (`onset displays` lists them). Set `[trigger]` to match your trigger box: a fORP in keyboard mode types `5` on each TR; serial boxes use `source = "serial"`.
-2. Run `onset timing-test --rig your-rig.toml` on the projector. You want 0 dropped frames.
+1. Copy `examples/rigs/scanner-forp.toml` (a 120 Hz MR display and a fORP trigger box read over USB) and adjust it. Onset uses the first display that isn't the laptop's own screen; set `[display] monitor` to override it (`onset displays` lists them). Set `[trigger]` to match your trigger box: a fORP in keyboard mode types `t` (BYGRT mode) or `5` (12345 mode) on each TR; serial boxes use `source = "serial"`. Connect the stimulus display as a separate display, not mirrored.
+2. Run `onset inputs --rig your-rig.toml` and press each button (and let the scanner send a few pulses) to check every input arrives. Then run `onset timing-test --rig your-rig.toml` on the stimulus display. You want 0 dropped frames.
 3. Run the experiment:
 
    ```bash

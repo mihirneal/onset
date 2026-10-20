@@ -85,6 +85,9 @@ pub struct Trigger {
     /// Keyboard mode: the key the trigger box types (fORP default "5").
     #[serde(default = "default_trigger_key")]
     pub key: String,
+    /// USB mode ("hid"): the device's USB id "vendor:product" in hex, e.g.
+    /// "181b:0008" for a Current Designs fORP 932 (`onset ports` lists them).
+    pub device: Option<String>,
     /// Serial mode: port path, e.g. "/dev/cu.usbserial-1410" (see `onset ports`).
     pub port: Option<String>,
     #[serde(default = "default_baud")]
@@ -102,6 +105,7 @@ impl Default for Trigger {
         Trigger {
             source: TriggerSource::Keyboard,
             key: default_trigger_key(),
+            device: None,
             port: None,
             baud: default_baud(),
             serial_char: default_trigger_key(),
@@ -126,6 +130,8 @@ pub enum TriggerSource {
     #[default]
     Keyboard,
     Serial,
+    /// A USB keyboard-style trigger box read directly, whatever has focus.
+    Hid,
     Simulated,
 }
 
@@ -194,6 +200,15 @@ impl Rig {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("can't read rig file {}", path.display()))?;
         let rig: Rig = toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}:\n{e}", path.display()))?;
+        if rig.trigger.source == TriggerSource::Hid
+            && rig.trigger.device.as_deref().and_then(crate::input::parse_usb_id).is_none()
+        {
+            bail!(
+                "{}: [trigger] source = \"hid\" needs `device = \"vendor:product\"` in hex, e.g. \"181b:0008\" \
+                 (`onset ports` lists USB devices)",
+                path.display()
+            );
+        }
         if rig.trigger.source == TriggerSource::Serial && rig.trigger.port.is_none() {
             bail!("{}: [trigger] source = \"serial\" needs a `port`", path.display());
         }
