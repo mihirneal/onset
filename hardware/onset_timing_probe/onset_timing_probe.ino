@@ -16,8 +16,8 @@
  * wraps every ~71.6 minutes; this sketch counts the wraps so the number keeps
  * increasing. It starts near 0 when the board resets.
  *
- * tools/capture_probe.py records these lines to a TSV file; tools/analyze_timing.py
- * lines them up with Onset's own logs. See hardware/README.md and docs/VALIDATION.md.
+ * `onset probe` records these lines to a TSV file; `onset check-timing` lines
+ * them up with Onset's own logs. See hardware/README.md and docs/VALIDATION.md.
  *
  * Boards: Arduino Uno R3, Uno R4 (Minima / WiFi), Leonardo. All of them have
  * external interrupts on pins 2 and 3, which is what we use.
@@ -50,7 +50,7 @@
  * ---------------------------------
  *   1. Set CALIBRATE to 1, upload, open the Serial Monitor at 115200.
  *   2. Tape the sensor over the photodiode patch and run `onset timing-test`
- *      (patch flips white/black every frame) or a run with --simulate-tr.
+ *      (patch flips white/black every frame) or a run with --simulate.
  *   3. Turn the comparator pot until the on-board LED / "#cal" lines show the
  *      level following the patch: HIGH when white, LOW when black. A good
  *      threshold is about halfway between the black and white levels; check
@@ -70,7 +70,7 @@
  *   final dark period. GAP_US must be shorter than one frame (16.7 ms at
  *   60 Hz, 8.3 ms at 120 Hz). Turning the display to 100% brightness often
  *   removes backlight PWM entirely. Very short noise blips (a few µs) are
- *   reported and then removed by analyze_timing.py (--min-pulse-ms).
+ *   reported and then removed by `onset check-timing` (--min-pulse-ms).
  */
 
 // ============================== settings ===================================

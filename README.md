@@ -8,7 +8,8 @@ Developed and tested at the Center for Advanced Magnetic Resonance Imaging (CAMR
 - **Scanner-synced timing.** Every onset is scheduled as an absolute time after the first kept trigger, and snaps to the nearest refresh. A late frame can never push the rest of the run off schedule.
 - **Honest logs.** Every frame, trigger, and button press is timestamped. Each event records its planned onset, its measured onset, and the delay between them.
 - **BIDS output.** `sub-01_task-x_run-01_events.tsv` + `events.json` are ready for fMRIPrep, nilearn, FSL, or SPM.
-- **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset; there's a `timing-test` command and an Arduino rig for measuring real display latency.
+- **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset. `onset timing-test` measures frame pacing, and with a small Arduino rig `onset probe` and `onset check-timing` measure when light really appeared, onset by onset.
+- **One program.** Running, checking timing and building schedules are all `onset` commands, with nothing else to install.
 
 ## Quick start
 
@@ -32,7 +33,12 @@ onset schedule examples/flanker/experiment.toml   # print every planned event
 onset timing-test --seconds 10                    # refresh rate, jitter, dropped frames
 onset displays                                    # list monitors for the rig file
 onset ports                                       # list serial ports (trigger boxes)
+onset make-schedule examples/nsd/experiment.toml  # build a trial list from a folder of images
+onset probe --out probe.tsv                       # record the photodiode/trigger probe
+onset check-timing --probe probe.tsv --run data/sub-01/onset   # logged vs measured onsets
 ```
+
+`onset <command> --help` describes each command's options.
 
 ## Examples
 
