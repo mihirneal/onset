@@ -1,29 +1,33 @@
-# Scanner rig with a Current Designs fORP in USB keyboard mode (HID KEY 12345).
-# The fORP types "5" for every TR and 1-4 for the four buttons of one hand.
-# Run `onset displays` to find the projector and put its index or name below.
+# The scanner rig at BCM's CAMRI (Siemens Prisma), confirmed on 2026-10-20:
+# BOLDscreen32 at 1920x1080, 120 Hz, connected to the stimulus Mac as a
+# separate (extended, not mirrored) display through the Gefen KVM, and a
+# Current Designs fORP 932 in USB keyboard mode ("HID KEY BYGRT" on its
+# display). In that mode the fORP types "t" for every volume and b/y/g/r
+# for the buttons. Dummy volumes and the localizer send no trigger.
+#
+# If the fORP is switched to "HID KEY 12345" instead, the trigger is "5" and
+# the buttons are 1-4: change [trigger] key and the [buttons] keys to match.
 
 [display]
-# monitor = 1             # or part of its name, e.g. "PROPixx"
+# Default: the first display that isn't the laptop's own screen. macOS gives
+# winit no real display names ("Monitor #28928"), so pick by index if needed:
+# `onset displays` lists them.
+# monitor = 1
 fullscreen = true
-expected_hz = 60
+expected_hz = 120
 hide_cursor = true
 
 [trigger]
 source = "keyboard"
-key = "5"
-
-# Serial mode instead (fORP "932" serial output, or an Arduino trigger box):
-# source = "serial"
-# port = "/dev/cu.usbserial-1410"   # `onset ports` lists them
-# baud = 19200
-# serial_char = "5"
+key = "t"
 
 [buttons]
-# raw key = label used in experiments
-"1" = "1"
-"2" = "2"
-"3" = "3"
-"4" = "4"
+# raw key = label used in experiments. Which finger each color is still
+# needs checking with someone pressing the pads.
+"b" = "1"
+"y" = "2"
+"g" = "3"
+"r" = "4"
 
 [photodiode]
 enabled = true

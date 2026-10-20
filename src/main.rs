@@ -286,7 +286,16 @@ fn cmd_displays() -> Result<()> {
 }
 
 fn pick_monitor(el: &ActiveEventLoop, sel: Option<&MonitorSelect>) -> Result<Option<MonitorHandle>> {
-    let monitors: Vec<MonitorHandle> = el.available_monitors().collect();
+    // Sleeping displays aren't listed. `keep_displays_awake` has asked them
+    // to wake; give them up to 5 s to come back.
+    let mut monitors: Vec<MonitorHandle> = Vec::new();
+    for _ in 0..50 {
+        monitors = el.available_monitors().collect();
+        if !monitors.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let primary = el.primary_monitor();
     Ok(match sel {
         Some(MonitorSelect::Index(i)) => Some(
@@ -441,6 +450,7 @@ enum Mode {
 type WriterSlot = Arc<Mutex<Option<(Sender<LogMsg>, JoinHandle<Result<WriterReport>>)>>>;
 
 fn present(mode: Mode) -> Result<()> {
+    macos::keep_displays_awake();
     let writer: WriterSlot = Arc::new(Mutex::new(None));
     {
         let writer = writer.clone();
@@ -592,8 +602,22 @@ impl App {
         let mut attrs = Window::default_attributes()
             .with_title("Onset")
             .with_window_level(winit::window::WindowLevel::AlwaysOnTop);
-        if rig.display.fullscreen {
-            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(monitor.clone())));
+        let cover = rig.display.fullscreen && monitor.is_some();
+        if let (true, Some(m)) = (cover, &monitor) {
+            // A borderless window placed exactly over the display, not
+            // macOS fullscreen (see `macos::cover_screen`). Position and size
+            // are in that display's own points, so the laptop's Retina
+            // scaling can't shift the window onto the wrong screen.
+            let scale = m.scale_factor();
+            let position: winit::dpi::LogicalPosition<f64> = m.position().to_logical(scale);
+            let size: winit::dpi::LogicalSize<f64> = m.size().to_logical(scale);
+            attrs = attrs
+                .with_decorations(false)
+                .with_resizable(false)
+                .with_position(position)
+                .with_inner_size(size);
+        } else if rig.display.fullscreen {
+            attrs = attrs.with_fullscreen(Some(Fullscreen::Borderless(None)));
         } else {
             let [w, h] = rig.display.window_size;
             attrs = attrs.with_inner_size(winit::dpi::LogicalSize::new(w, h));
@@ -604,6 +628,9 @@ impl App {
         }
         window.focus_window();
         macos::bring_to_front(&window);
+        if cover {
+            macos::cover_screen(&window);
+        }
         let mut renderer = Renderer::new(window.clone(), Box::new(el.owned_display_handle()))?;
         if rig.photodiode.enabled {
             renderer.photodiode =

@@ -4,3 +4,6 @@
 # NSD stimuli may not be redistributed: never commit them
 *_nsd[0-9]*.png
 nsd_stimuli.hdf5
+
+# Logs from the scanner-day checkerboard/trigger-log tools
+/logs
