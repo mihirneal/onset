@@ -4,7 +4,7 @@
 //! like PsychoPy. The renderer converts to physical pixels for HiDPI screens.
 
 use crate::color::Color;
-use crate::experiment::{Experiment, StimulusDef};
+use crate::experiment::{Experiment, StimulusDef, WelcomeStyle};
 use crate::template::{Vars, fill};
 use std::path::PathBuf;
 
@@ -53,6 +53,25 @@ pub enum Item {
         color: Color,
         font: Option<String>,
     },
+    /// The animated welcome background, title and greeting. Only the screens
+    /// before t = 0 have one; the renderer draws it behind everything else.
+    Welcome(WelcomeScreen),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct WelcomeScreen {
+    pub style: WelcomeStyle,
+    pub title: String,
+    /// The greeting with the participant's name filled in. Display only:
+    /// nothing Onset writes to disk contains it.
+    pub greeting: Option<String>,
+    pub accent: Color,
+    pub color: Color,
+    pub font: String,
+    /// The wait for the scanner (adds a standby beacon) rather than the instructions.
+    pub waiting: bool,
+    /// Animation time in seconds, from frame flip times; the runtime advances it.
+    pub time: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -77,17 +96,50 @@ impl Scene {
         }
     }
 
-    /// Set every checkerboard's contrast phase for `t` seconds after onset.
+    /// `text` on the welcome screen: the experiment's text over the animated
+    /// background, in the welcome's text color so it stays readable.
+    pub fn welcome(exp: &Experiment, text: &str, waiting: bool) -> Option<Scene> {
+        let w = exp.welcome.as_ref()?;
+        let m = &exp.experiment;
+        let mut items = vec![Item::Welcome(WelcomeScreen {
+            style: w.style,
+            title: w.title.clone().unwrap_or_else(|| m.name.clone()),
+            greeting: None,
+            accent: w.accent,
+            color: w.color,
+            font: w.font.clone(),
+            waiting,
+            time: 0.0,
+        })];
+        if !text.trim().is_empty() {
+            items.push(Item::Text {
+                text: text.to_string(),
+                x: 0.0,
+                y: 0.0,
+                size: m.font_size,
+                color: w.color,
+                font: m.font.clone(),
+            });
+        }
+        Some(Scene { background: Color::BLACK, items })
+    }
+
+    /// Set every checkerboard's contrast phase and the welcome animation for
+    /// `t` seconds after onset.
     pub fn animate(&mut self, t: f64) {
         for item in &mut self.items {
-            if let Item::Checker { reversal_hz, phase, .. } = item {
-                *phase = (t.max(0.0) * *reversal_hz as f64).floor() as u64 % 2 == 1;
+            match item {
+                Item::Checker { reversal_hz, phase, .. } => {
+                    *phase = (t.max(0.0) * *reversal_hz as f64).floor() as u64 % 2 == 1;
+                }
+                Item::Welcome(w) => w.time = t.max(0.0) as f32,
+                _ => {}
             }
         }
     }
 
     pub fn is_animated(&self) -> bool {
-        self.items.iter().any(|i| matches!(i, Item::Checker { .. }))
+        self.items.iter().any(|i| matches!(i, Item::Checker { .. } | Item::Welcome(_)))
     }
 }
 

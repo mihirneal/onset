@@ -29,6 +29,32 @@ Any string marked *template* can use `{column}` to insert a value from the curre
 
 Colors can be names (`white black gray red green blue yellow`), hex values (`"#808080"`, `"#fff"`, or `"#ff000080"` with alpha), or `[r, g, b]` / `[r, g, b, a]` from 0 to 255. Values go to the display without gamma conversion.
 
+### `[welcome]`
+
+An optional animated title screen behind the instructions and the "waiting for the scanner" screen. Leave the table out and those screens are plain text on the experiment's `background`, as before. `[welcome]` with no keys turns it on with the defaults.
+
+```toml
+[welcome]
+style = "grid"
+```
+
+| key | default | |
+|---|---|---|
+| `style` | `"grid"` | `"grid"`: a dark horizon with a slowly approaching perspective grid, a soft scan beam and drifting particles |
+| `title` | `[experiment] name` | Study title at the top of the screen |
+| `greeting` | `"Welcome, {name}"` | Line under the title, shown only when `onset run --name "First Last"` is given; `{name}` is replaced |
+| `accent` | `"#40c8ff"` | Color of the grid, glow lines and greeting |
+| `color` | `"white"` | Color of all text on these screens, including the instructions |
+| `font` | `"Avenir Next"` | Font of the title and greeting. The instructions keep `[experiment] font` |
+
+The instructions and waiting text sit on a dark glass panel so they stay readable, and move down if they would run into the title. Text too tall to fit under the title keeps its place, and the title is left out. The waiting screen adds a slowly pulsing standby beacon.
+
+The welcome screen is gone from the first kept trigger (t = 0): from then on only the experiment's own screens are drawn, and the welcome background costs nothing (no draw call, no per-frame work). Its animation runs on the frame clock, like checkerboard reversals. The photodiode patch is drawn on top of it exactly as on any other screen.
+
+The participant's name is display only. It is never written to `events.tsv`, `run.json`, the raw logs, or any other file; the subject label (`--sub`) stays the only identifier in the data.
+
+The welcome screen is dark. If the experiment's background is bright, the switch at t = 0 is a step in luminance, so start the run with a few seconds of baseline, as the examples do.
+
 ### `[scanner]`
 
 | key | default | |

@@ -18,6 +18,12 @@ instructions = """Please stay awake and keep your eyes on the cross, but otherwi
 When the cross turns red, take one deep breath in, like a sigh."""
 waiting_text = "The scan will begin shortly."
 
+# Animated title screen behind the instructions and the wait for the scanner,
+# titled with the experiment name. `onset run --name "First Last"` greets the
+# participant by name (shown only, never saved). Gone from the first trigger.
+[welcome]
+style = "grid"
+
 [scanner]
 tr = 1.6
 volumes = 188

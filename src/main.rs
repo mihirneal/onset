@@ -91,6 +91,9 @@ struct RunArgs {
     /// Session label.
     #[arg(long)]
     ses: Option<String>,
+    /// Participant's name for the welcome screen. Shown only; never saved.
+    #[arg(long)]
+    name: Option<String>,
     /// Run number. Defaults to the next one without data.
     #[arg(long, short)]
     run: Option<u32>,
@@ -330,6 +333,8 @@ struct RunSetup {
     exp_path: PathBuf,
     rig_path: Option<PathBuf>,
     robot: bool,
+    /// For the welcome screen only: keep it out of run.json and every log.
+    name: Option<String>,
 }
 
 fn prompt(label: &str) -> Result<String> {
@@ -367,6 +372,12 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     }
     if args.robot {
         println!("   {}", yellow("robot participant: button presses are simulated"));
+    }
+    if args.name.is_some() && exp.welcome.is_none() {
+        println!(
+            "{} --name is shown on the [welcome] screen, and this experiment has none",
+            yellow("warning:")
+        );
     }
     let out_dir = args.out.clone().unwrap_or_else(|| rig.output.dir.clone());
     let task = exp.experiment.task.clone();
@@ -427,6 +438,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         exp_path: args.experiment,
         rig_path: args.rig,
         robot: args.robot,
+        name: args.name,
     };
     present(Mode::Run(setup))
 }
@@ -706,6 +718,9 @@ impl App {
 
                 let mut run =
                     Run::new(setup.exp, setup.timeline.clone(), hz, setup.rig.photodiode.flash_frames);
+                if let Some(name) = &setup.name {
+                    run.set_participant_name(name);
+                }
                 let scenes = run.all_scenes();
                 let robot = setup.robot.then(|| Robot {
                     rng: onset::rng::Rng::new(setup.timeline.seed ^ 0x5eed),

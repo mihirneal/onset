@@ -16,6 +16,9 @@ pub struct Experiment {
     pub experiment: Meta,
     #[serde(default)]
     pub scanner: Scanner,
+    /// Animated title screen behind the instructions and the wait for the
+    /// scanner. Off unless the experiment has a `[welcome]` table.
+    pub welcome: Option<Welcome>,
     #[serde(default)]
     pub stimuli: BTreeMap<String, StimulusDef>,
     pub trial: TrialDef,
@@ -77,6 +80,47 @@ pub struct Scanner {
     pub dummy_volumes: u32,
     /// Volumes in the run; the run lasts at least `volumes * tr` seconds.
     pub volumes: Option<u32>,
+}
+
+/// The welcome screen shown before t = 0 (`[welcome]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Welcome {
+    #[serde(default)]
+    pub style: WelcomeStyle,
+    /// Study title; defaults to `[experiment] name`.
+    pub title: Option<String>,
+    /// Line under the title when `onset run --name` is given; `{name}` is
+    /// replaced with the participant's name.
+    #[serde(default = "default_greeting")]
+    pub greeting: String,
+    /// Color of the grid, glow lines and greeting.
+    #[serde(default = "default_accent")]
+    pub accent: Color,
+    /// Color of all text on the welcome screens, including the instructions.
+    #[serde(default = "default_foreground")]
+    pub color: Color,
+    /// Font for the title and greeting; the instructions keep `[experiment] font`.
+    #[serde(default = "default_welcome_font")]
+    pub font: String,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WelcomeStyle {
+    /// A dark horizon with a slowly moving perspective grid, scan lines and drifting particles.
+    #[default]
+    Grid,
+}
+
+fn default_greeting() -> String {
+    "Welcome, {name}".into()
+}
+fn default_accent() -> Color {
+    Color::rgb8(64, 200, 255)
+}
+fn default_welcome_font() -> String {
+    "Avenir Next".into()
 }
 
 /// A named thing that can be drawn. Strings may contain `{column}` templates.

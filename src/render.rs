@@ -3,11 +3,14 @@
 //! Frame pacing lives in the caller: `acquire()` blocks until the display is
 //! ready for a new frame (vsync), the caller timestamps that moment, decides
 //! what to show, then calls `draw()` which submits and presents.
+//!
+//! `Renderer::headless` draws without a window, for snapshots in tests.
 
 use crate::color::Color;
 use crate::rig::Corner;
-use crate::scene::{Item, Scene};
+use crate::scene::{Item, Scene, WelcomeScreen};
 use anyhow::{Context, Result, anyhow};
+use glyphon::cosmic_text::Weight;
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -40,6 +43,19 @@ struct ImageInstance {
     half: [f32; 2],
 }
 
+/// Uniforms for `shaders/welcome.wgsl`. Boxes are physical pixels, top-left origin.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct WelcomeUniforms {
+    size: [f32; 2],
+    time: f32,
+    scale: f32,
+    accent: [f32; 4],
+    panel: [f32; 4],
+    title: [f32; 4],
+    beacon: [f32; 4],
+}
+
 struct GpuImage {
     bind_group: wgpu::BindGroup,
     width: f32,
@@ -59,7 +75,8 @@ pub struct PhotodiodePatch {
 
 pub struct Renderer {
     // Field order matters: the surface must drop before the window.
-    surface: wgpu::Surface<'static>,
+    // Both are None for a headless renderer.
+    surface: Option<wgpu::Surface<'static>>,
     instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -75,6 +92,9 @@ pub struct Renderer {
     image_buf: wgpu::Buffer,
     sampler: wgpu::Sampler,
     images: HashMap<PathBuf, GpuImage>,
+    welcome_pipeline: wgpu::RenderPipeline,
+    welcome_buf: wgpu::Buffer,
+    welcome_bind: wgpu::BindGroup,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -85,7 +105,7 @@ pub struct Renderer {
 
     pub scale: f32,
     pub photodiode: Option<PhotodiodePatch>,
-    window: Arc<Window>,
+    window: Option<Arc<Window>>,
 }
 
 impl Renderer {
@@ -135,7 +155,52 @@ impl Renderer {
             color_space: wgpu::SurfaceColorSpace::Auto,
         };
         surface.configure(&device, &config);
+        let scale = window.scale_factor() as f32;
+        Ok(Renderer::build(instance, Some(surface), Some(window), adapter_info, device, queue, config, scale))
+    }
 
+    /// A renderer with no window that only draws offscreen (`snapshot`), at
+    /// `width` × `height` physical pixels in the format a Mac display uses.
+    /// `acquire` always returns None.
+    pub fn headless(width: u32, height: u32, scale: f32) -> Result<Renderer> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            ..Default::default()
+        }))
+        .context("no GPU adapter")?;
+        let adapter_info = adapter.get_info();
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor { label: Some("onset"), ..Default::default() }),
+        )
+        .context("create GPU device")?;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 1,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        Ok(Renderer::build(instance, None, None, adapter_info, device, queue, config, scale))
+    }
+
+    /// Pipelines, buffers and text setup, shared by both constructors.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        instance: wgpu::Instance,
+        surface: Option<wgpu::Surface<'static>>,
+        window: Option<Arc<Window>>,
+        adapter_info: wgpu::AdapterInfo,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        config: wgpu::SurfaceConfiguration,
+        scale: f32,
+    ) -> Renderer {
+        let format = config.format;
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: 16,
@@ -285,6 +350,66 @@ impl Renderer {
             ..Default::default()
         });
 
+        // Welcome background: one full-screen triangle, opaque.
+        let welcome_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("welcome"),
+            size: std::mem::size_of::<WelcomeUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let welcome_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("welcome"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let welcome_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("welcome"),
+            layout: &welcome_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: welcome_buf.as_entire_binding() }],
+        });
+        let welcome_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("welcome"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/welcome.wgsl").into()),
+        });
+        let welcome_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("welcome"),
+            bind_group_layouts: &[Some(&welcome_layout)],
+            ..Default::default()
+        });
+        let welcome_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("welcome"),
+            layout: Some(&welcome_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &welcome_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &welcome_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            cache: None,
+            multiview_mask: None,
+        });
+
         // Text
         let font_system = FontSystem::new();
         let swash_cache = SwashCache::new();
@@ -294,7 +419,7 @@ impl Renderer {
         let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, color_mode);
         let text_renderer = TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
 
-        Ok(Renderer {
+        Renderer {
             surface,
             instance,
             device,
@@ -310,16 +435,19 @@ impl Renderer {
             image_buf,
             sampler,
             images: HashMap::new(),
+            welcome_pipeline,
+            welcome_buf,
+            welcome_bind,
             font_system,
             swash_cache,
             viewport,
             atlas,
             text_renderer,
             text_cache: HashMap::new(),
-            scale: window.scale_factor() as f32,
+            scale,
             photodiode: None,
             window,
-        })
+        }
     }
 
     pub fn format(&self) -> wgpu::TextureFormat {
@@ -338,7 +466,9 @@ impl Renderer {
         self.config.height = height;
         self.scale = scale;
         self.text_cache.clear();
-        self.surface.configure(&self.device, &self.config);
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+        }
     }
 
     /// Load and upload images before the run so nothing is decoded mid-run.
@@ -398,8 +528,16 @@ impl Renderer {
         let mut keys = Vec::new();
         for scene in scenes {
             for item in &scene.items {
-                if let Item::Text { text, size, font, .. } = item {
-                    keys.push(self.ensure_text(text, size * self.scale, font.as_deref(), w));
+                match item {
+                    Item::Text { text, size, font, .. } => {
+                        keys.push(self.ensure_text(text, size * self.scale, font.as_deref(), w))
+                    }
+                    Item::Welcome(wl) => {
+                        let (title, greeting) = self.welcome_text(wl);
+                        keys.push(title);
+                        keys.extend(greeting);
+                    }
+                    _ => {}
                 }
             }
         }
@@ -443,19 +581,20 @@ impl Renderer {
     /// Block until the display can take a new frame. Returns None if the
     /// surface needed reconfiguring (just call again next loop).
     pub fn acquire(&mut self) -> Option<wgpu::SurfaceTexture> {
-        match self.surface.get_current_texture() {
+        let (surface, window) = (self.surface.as_mut()?, self.window.as_ref()?);
+        match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => None,
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, &self.config);
                 None
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                if let Ok(s) = self.instance.create_surface(self.window.clone()) {
-                    self.surface = s;
+                if let Ok(s) = self.instance.create_surface(window.clone()) {
+                    *surface = s;
                 }
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, &self.config);
                 None
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -469,7 +608,9 @@ impl Renderer {
     pub fn draw(&mut self, frame: wgpu::SurfaceTexture, scene: &Scene, photodiode_on: Option<bool>) {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.render_to(&view, scene, photodiode_on);
-        self.window.pre_present_notify();
+        if let Some(window) = &self.window {
+            window.pre_present_notify();
+        }
         self.queue.present(frame);
         self.atlas.trim();
     }
@@ -545,6 +686,7 @@ impl Renderer {
         let mut image_instances: Vec<ImageInstance> = Vec::new();
         let mut draws: Vec<Draw> = Vec::new();
         let mut texts: Vec<(String, f32, f32, Color)> = Vec::new();
+        let mut welcome: Option<&WelcomeScreen> = None;
 
         let push_shape = |shapes: &mut Vec<ShapeInstance>, draws: &mut Vec<Draw>, inst: ShapeInstance| {
             if shapes.len() >= MAX_SHAPES {
@@ -615,7 +757,14 @@ impl Renderer {
                     let key = self.ensure_text(text, size * s, font.as_deref(), w);
                     texts.push((key, x * s, y * s, *color));
                 }
+                Item::Welcome(wl) => welcome = Some(wl),
             }
+        }
+        // Only the screens before t0 have a welcome item; without one this
+        // costs nothing (no uniform upload, no draw call).
+        let welcome = welcome.map(|wl| self.layout_welcome(wl, &mut texts));
+        if let Some(u) = &welcome {
+            self.queue.write_buffer(&self.welcome_buf, 0, bytemuck::bytes_of(u));
         }
 
         // Photodiode patch goes on top of everything.
@@ -704,6 +853,11 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if welcome.is_some() {
+                pass.set_pipeline(&self.welcome_pipeline);
+                pass.set_bind_group(0, &self.welcome_bind, &[]);
+                pass.draw(0..3, 0..1);
+            }
             pass.set_bind_group(0, &self.globals_bind, &[]);
             for d in &draws {
                 match d {
@@ -733,9 +887,109 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
     }
 
+    /// The welcome title and greeting, shaped; returns their cache keys.
+    /// Sizes follow the screen height so the layout looks the same on any display.
+    fn welcome_text(&mut self, wl: &WelcomeScreen) -> (String, Option<String>) {
+        let (w, h) = (self.config.width as f32, self.config.height as f32);
+        let font = Some(wl.font.as_str());
+        let title = self.ensure_styled_text(&wl.title, 0.052 * h, font, Weight::MEDIUM, 0.14, w);
+        let greeting = wl
+            .greeting
+            .as_deref()
+            .map(|g| self.ensure_styled_text(g, 0.032 * h, font, Weight::NORMAL, 0.03, w));
+        (title, greeting)
+    }
+
+    /// Place the welcome title and greeting at the top, move the screen's
+    /// own text (`texts`, the instructions or waiting text) down if it would
+    /// run into them, and fit the glass panel around it. Text too tall to
+    /// fit under the title keeps its place and the title is left out.
+    fn layout_welcome(
+        &mut self,
+        wl: &WelcomeScreen,
+        texts: &mut Vec<(String, f32, f32, Color)>,
+    ) -> WelcomeUniforms {
+        let (w, h) = (self.config.width as f32, self.config.height as f32);
+        let (title_key, greeting_key) = self.welcome_text(wl);
+        let (title_w, title_h) = line_extent(&self.text_cache[&title_key]);
+        let title_top = 0.085 * h;
+        let mut title = [(w - title_w) / 2.0, title_top, (w + title_w) / 2.0, title_top + title_h];
+        // The shader's glow line sits 0.022 h under the title.
+        let mut header_bottom = title[3] + 0.022 * h;
+        let mut header = vec![(title_key, 0.0, h / 2.0 - title_top - title_h / 2.0, wl.color)];
+        if let Some(key) = greeting_key {
+            let (_, gh) = line_extent(&self.text_cache[&key]);
+            let top = header_bottom + 0.02 * h;
+            header.push((key, 0.0, h / 2.0 - top - gh / 2.0, wl.accent));
+            header_bottom = top + gh;
+        }
+
+        // Bounding box of the screen's text (center-origin, +y up in `texts`).
+        let mut body: Option<[f32; 4]> = None;
+        for (key, x, y, _) in texts.iter() {
+            let (lw, bh) = line_extent(&self.text_cache[key]);
+            let top = h / 2.0 - y - bh / 2.0;
+            let b = [w / 2.0 + x - lw / 2.0, top, w / 2.0 + x + lw / 2.0, top + bh];
+            body = Some(body.map_or(b, |a| [a[0].min(b[0]), a[1].min(b[1]), a[2].max(b[2]), a[3].max(b[3])]));
+        }
+        let (pad_x, pad_y) = (0.05 * h, 0.04 * h);
+        let mut panel = [0.0; 4];
+        if let Some(b) = body {
+            // Clear the header by 0.04 h, without pushing the panel off the bottom.
+            let needed = (header_bottom + 0.04 * h - (b[1] - pad_y)).max(0.0);
+            let room = 0.97 * h - (b[3] + pad_y);
+            let shift = if needed <= room { needed } else { 0.0 };
+            if needed > room {
+                header.clear();
+                title = [0.0; 4];
+            }
+            for t in texts.iter_mut() {
+                t.2 -= shift;
+            }
+            let half_w = ((b[2] - b[0]) / 2.0 + pad_x).max(0.17 * w);
+            let cx = (b[0] + b[2]) / 2.0;
+            panel = [
+                cx - half_w,
+                (b[1] - pad_y + shift).max(0.01 * h),
+                cx + half_w,
+                (b[3] + pad_y + shift).min(0.99 * h),
+            ];
+        }
+        texts.extend(header);
+
+        let beacon = if wl.waiting {
+            let below = if panel[2] > panel[0] { panel[3] } else { 0.5 * h };
+            [w / 2.0, (below + 0.1 * h).clamp(0.76 * h, 0.93 * h), 0.0, 1.0]
+        } else {
+            [0.0; 4]
+        };
+        WelcomeUniforms {
+            size: [w, h],
+            time: wl.time,
+            scale: self.scale,
+            accent: wl.accent.to_array(),
+            panel,
+            title,
+            beacon,
+        }
+    }
+
     /// Shape `text` once and cache it; returns the cache key.
     fn ensure_text(&mut self, text: &str, px: f32, font: Option<&str>, screen_w: f32) -> String {
-        let key = format!("{px}|{font:?}|{text}");
+        self.ensure_styled_text(text, px, font, Weight::NORMAL, 0.0, screen_w)
+    }
+
+    /// `ensure_text` with a font weight and letter spacing (in em).
+    fn ensure_styled_text(
+        &mut self,
+        text: &str,
+        px: f32,
+        font: Option<&str>,
+        weight: Weight,
+        spacing: f32,
+        screen_w: f32,
+    ) -> String {
+        let key = format!("{px}|{font:?}|{}|{spacing}|{text}", weight.0);
         if !self.text_cache.contains_key(&key) {
             let mut buf = TextBuffer::new(&mut self.font_system, Metrics::new(px, px * 1.3));
             buf.set_size(Some(screen_w * 0.9), None);
@@ -743,12 +997,11 @@ impl Renderer {
                 Some(name) => Family::Name(name),
                 None => Family::SansSerif,
             };
-            buf.set_text(
-                text,
-                &Attrs::new().family(family),
-                Shaping::Advanced,
-                Some(glyphon::cosmic_text::Align::Center),
-            );
+            let mut attrs = Attrs::new().family(family).weight(weight);
+            if spacing != 0.0 {
+                attrs = attrs.letter_spacing(spacing);
+            }
+            buf.set_text(text, &attrs, Shaping::Advanced, Some(glyphon::cosmic_text::Align::Center));
             buf.shape_until_scroll(&mut self.font_system, false);
             self.text_cache.insert(key.clone(), buf);
         }
@@ -761,4 +1014,10 @@ fn text_extent(buf: &TextBuffer) -> (f32, f32) {
     let width = buf.size().0.unwrap_or(0.0);
     let height = buf.layout_runs().map(|r| r.line_top + r.line_height).fold(0.0, f32::max);
     (width, height)
+}
+
+/// Width of the longest line and height of shaped text.
+fn line_extent(buf: &TextBuffer) -> (f32, f32) {
+    let width = buf.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
+    (width, text_extent(buf).1)
 }

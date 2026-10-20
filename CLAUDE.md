@@ -27,7 +27,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 | `src/experiment.rs`, `src/rig.rs` | TOML formats: experiment (portable) and rig (display, trigger, buttons, photodiode) |
 | `src/schedule.rs` | Compiles an experiment + schedule TSV into absolute planned onsets; validation |
 | `src/run.rs` | The run state machine: picks what each frame shows, handles triggers/responses, produces records. No GPU code, unit-tested with synthetic frame times |
-| `src/render.rs`, `src/shaders/` | wgpu renderer: shapes, circles, radial checkerboard, images, text (glyphon), photodiode patch, offscreen snapshots |
+| `src/render.rs`, `src/shaders/` | wgpu renderer: shapes, circles, radial checkerboard, images, text (glyphon), photodiode patch, welcome screen, offscreen snapshots (also headless, no window) |
 | `src/output.rs` | Writer thread: BIDS events.tsv/json, raw frames/inputs/eventlog TSVs, run.json |
 | `src/input.rs` | Serial and simulated-scanner threads; every input timestamped on arrival |
 | `src/main.rs`, `src/console.rs`, `src/macos.rs` | CLI, window and frame loop, operator status line, macOS priority and window placement |
@@ -40,6 +40,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - `cargo test`, `cargo clippy -- -D warnings`, `onset validate` on every example, and `python -m pytest tools` (in a venv). CI on GitHub runs the same on macOS.
 - End-to-end without hardware: `onset run <exp> --rig examples/rigs/dev.toml --simulate --robot --sub 99 --out <scratch dir>`. For a quick check, copy the experiment with the `instructions` removed and fewer volumes. `ONSET_SNAPSHOTS=<dir>` saves each event's first frame as a PNG; it disturbs timing, so use it only for checking visuals.
 - Test runs open windows on the owner's screen. Keep them short, and ask before anything fullscreen.
+- Visual checks without a window: `ONSET_WELCOME_SNAPSHOTS=<dir> cargo test --test welcome` renders the welcome screens of every example offscreen (`Renderer::headless`) and saves PNGs.
 
 ## Design decisions
 
@@ -49,6 +50,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
 - **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock. The same check works for other presentation software on the same paradigm, for a like-for-like comparison.
+- **Welcome screen:** optional `[welcome]` table: an animated shader background with the study title, shown only before the first kept trigger; nothing of it runs after t0. `onset run --name` greets the participant on it. The name is display-only by design: never in any log, events.tsv, run.json or other file (`tests/welcome.rs` checks); `--sub` stays the only identifier.
 - **NSD:** stimuli may not be redistributed. NSD images live outside the repo (`~/nsd/`), and `.gitignore` blocks `*_nsd*.png`. Never commit them.
 
 ## The scanner rig (CAMRI, confirmed 2026-10-20)

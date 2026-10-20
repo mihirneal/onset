@@ -11,7 +11,7 @@
 //! photodiode rig measures the true display latency on top of this.
 
 use crate::experiment::Experiment;
-use crate::scene::{self, Scene};
+use crate::scene::{self, Item, Scene};
 use crate::schedule::{PlannedEvent, Timeline};
 use crate::template::Vars;
 use std::collections::HashMap;
@@ -169,6 +169,8 @@ pub struct Run<'e> {
     instructions: Scene,
     waiting: Scene,
     frame_scene: Scene,
+    /// Flip time of the first frame; the welcome animation's clock starts here.
+    first_flip: Option<f64>,
 
     last_acquire: Option<f64>,
     last_index: Option<u64>,
@@ -187,12 +189,17 @@ impl<'e> Run<'e> {
     pub fn new(exp: &'e Experiment, timeline: Timeline, nominal_hz: f64, flash_frames: u32) -> Run<'e> {
         let instructions = exp.experiment.instructions.as_deref();
         let n = timeline.events.len();
+        // With a [welcome] table, the screens before t0 get its animated background.
+        let screen = |text: &str, waiting: bool| {
+            Scene::welcome(exp, text, waiting).unwrap_or_else(|| Scene::text(exp, text))
+        };
         Run {
             exp,
             phase: if instructions.is_some() { Phase::Instructions } else { Phase::Waiting },
-            instructions: Scene::text(exp, instructions.unwrap_or("")),
-            waiting: Scene::text(exp, &exp.experiment.waiting_text),
+            instructions: screen(instructions.unwrap_or(""), false),
+            waiting: screen(&exp.experiment.waiting_text, true),
             frame_scene: Scene { background: exp.experiment.background, items: vec![] },
+            first_flip: None,
             timeline,
             t0: None,
             triggers: Vec::new(),
@@ -222,6 +229,22 @@ impl<'e> Run<'e> {
 
     pub fn timeline(&self) -> &Timeline {
         &self.timeline
+    }
+
+    /// Greet the participant by name on the welcome screen (if the experiment
+    /// has one). The name is only drawn: no record, frame or log entry this
+    /// run produces contains it.
+    pub fn set_participant_name(&mut self, name: &str) {
+        let Some(def) = &self.exp.welcome else { return };
+        let name = name.trim();
+        let greeting = (!name.is_empty()).then(|| def.greeting.replace("{name}", name));
+        for scene in [&mut self.instructions, &mut self.waiting] {
+            for item in &mut scene.items {
+                if let Item::Welcome(w) = item {
+                    w.greeting.clone_from(&greeting);
+                }
+            }
+        }
     }
 
     /// Current estimate of the refresh period (seconds).
@@ -425,8 +448,17 @@ impl<'e> Run<'e> {
         });
 
         let scene = match self.phase {
-            Phase::Instructions => &self.instructions,
-            Phase::Waiting => &self.waiting,
+            Phase::Instructions | Phase::Waiting => {
+                // Welcome animation time comes from flip times, like checkerboard reversals.
+                let start = *self.first_flip.get_or_insert(flip);
+                let screen = if self.phase == Phase::Instructions {
+                    &mut self.instructions
+                } else {
+                    &mut self.waiting
+                };
+                screen.animate(flip - start);
+                &*screen
+            }
             Phase::Running | Phase::Done(_) => {
                 let t = flip - self.t0.unwrap_or(flip);
                 let (key, onset) = match shown_event {
@@ -661,8 +693,16 @@ mod tests {
     const P: f64 = 1.0 / HZ;
 
     fn experiment() -> Experiment {
-        let mut e: Experiment = toml::from_str(
-            r#"
+        parse(EXPERIMENT)
+    }
+
+    fn parse(text: &str) -> Experiment {
+        let mut e: Experiment = toml::from_str(text).unwrap();
+        e.base_dir = PathBuf::from(".");
+        e
+    }
+
+    const EXPERIMENT: &str = r#"
             [experiment]
             name = "t"
             task = "t"
@@ -703,12 +743,7 @@ mod tests {
               { onset = 1.0, word = "a", answer = "1", cond = "x" },
               { onset = 3.0, word = "b", answer = "2", cond = "y" },
             ]
-            "#,
-        )
-        .unwrap();
-        e.base_dir = PathBuf::from(".");
-        e
-    }
+            "#;
 
     /// Drive the run with perfect vsync frames from `start` until done.
     fn drive(run: &mut Run, frames: &mut u64, start: f64, inputs: &[(f64, Input)]) -> Vec<EventRecord> {
@@ -814,6 +849,57 @@ mod tests {
         assert_eq!(run.phase, Phase::Waiting);
         run.input(Input::Trigger, 5.0);
         assert_eq!(run.t0, Some(5.0));
+    }
+
+    fn welcome(scene: &Scene) -> Option<crate::scene::WelcomeScreen> {
+        scene.items.iter().find_map(|i| match i {
+            Item::Welcome(w) => Some(w.clone()),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn welcome_screen_runs_on_the_frame_clock_until_t0_and_never_after() {
+        let text = EXPERIMENT.replace("baseline = \"fix\"", "baseline = \"fix\"\ninstructions = \"Hi\"");
+        let e = parse(&format!("{text}\n[welcome]\naccent = \"#ff8800\"\n"));
+        let tl = compile(&e, 1, HZ).unwrap();
+        let mut run = Run::new(&e, tl, HZ, 3);
+        run.set_participant_name("  Ada Lovelace ");
+        assert_eq!(run.phase, Phase::Instructions);
+
+        let w0 = welcome(run.frame(0, 9.0).scene).expect("instructions have the welcome screen");
+        let w1 = welcome(run.frame(1, 9.0 + P).scene).unwrap();
+        assert!(!w0.waiting);
+        assert_eq!(w0.title, "t", "title defaults to the experiment name");
+        assert_eq!(w0.greeting.as_deref(), Some("Welcome, Ada Lovelace"));
+        assert_eq!(w0.accent, "#ff8800".parse().unwrap());
+        assert_eq!(w0.time, 0.0);
+        assert!((w1.time - P as f32).abs() < 1e-6, "time advances one refresh per frame");
+
+        run.input(Input::Continue, 9.0 + 1.5 * P);
+        let w2 = welcome(run.frame(2, 9.0 + 2.0 * P).scene).expect("waiting screen has it too");
+        assert!(w2.waiting);
+        assert_eq!(w2.greeting.as_deref(), Some("Welcome, Ada Lovelace"));
+        assert!((w2.time - 2.0 * P as f32).abs() < 1e-6, "one clock across both screens");
+
+        run.input(Input::Trigger, 9.0 + 2.5 * P);
+        let (mut f, mut t) = (3, 9.0 + 3.0 * P);
+        while !run.is_done() {
+            assert!(welcome(run.frame(f, t).scene).is_none(), "welcome screen visible after t0 (frame {f})");
+            f += 1;
+            t += P;
+        }
+        assert!(welcome(run.frame(f, t).scene).is_none(), "nor once the run is done");
+    }
+
+    #[test]
+    fn without_a_welcome_table_the_screens_are_unchanged() {
+        let e = experiment();
+        let tl = compile(&e, 1, HZ).unwrap();
+        let mut run = Run::new(&e, tl, HZ, 3);
+        run.set_participant_name("Ada Lovelace");
+        let scene = run.frame(0, 9.0).scene.clone();
+        assert_eq!(scene, Scene::text(&e, &e.experiment.waiting_text));
     }
 
     #[test]

@@ -8,6 +8,7 @@ Developed and tested at the Center for Advanced Magnetic Resonance Imaging (CAMR
 - **Scanner-synced timing.** Every onset is scheduled as an absolute time after the first kept trigger, and snaps to the nearest refresh. A late frame can never push the rest of the run off schedule.
 - **Honest logs.** Every frame, trigger, and button press is timestamped. Each event records its planned onset, its measured onset, and the delay between them.
 - **BIDS output.** `sub-01_task-x_run-01_events.tsv` + `events.json` are ready for fMRIPrep, nilearn, FSL, or SPM.
+- **A polished start.** An optional animated welcome screen shows the study title and greets the participant by name while the instructions and the wait for the scanner are on screen. It's gone the moment the first trigger arrives, and the name is never saved.
 - **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset; there's a `timing-test` command and an Arduino rig for measuring real display latency.
 
 ## Quick start
@@ -57,7 +58,7 @@ Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. Th
    onset run task.toml --rig your-rig.toml --sub 07 --ses 1
    ```
 
-   The run number is chosen automatically: Onset picks the next run without data, and never overwrites a run unless you pass `--force`. The terminal shows a live status line: elapsed time, TR count, trial, dropped frames, and the last response.
+   Add `--name "First Last"` to greet the participant on the welcome screen (experiments with a `[welcome]` table, like the examples). The name is only shown, never saved. The run number is chosen automatically: Onset picks the next run without data, and never overwrites a run unless you pass `--force`. The terminal shows a live status line: elapsed time, TR count, trial, dropped frames, and the last response.
 
 ## Output
 
