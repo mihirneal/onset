@@ -4,3 +4,42 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
+clap = { version = "4.6.7", features = ["derive"] }
+crossterm = "0.29.0"
+pollster = "1.0.1"
+wgpu = "30.0.1"
+winit = "0.30"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# cover_menu_bar in the checkerboard. This is the older objc2 0.5 family that
+# winit 0.30 uses; it doesn't mix with the 0.6 family below, and doesn't need to.
+objc2-app-kit = { version = "0.2.2", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow"] }
+
+# Our own present step (src/present.rs). These MUST be the versions wgpu 30's
+# Metal backend (wgpu-hal 30.0.1) uses: objc2 0.6, block2 0.6, objc2-metal and
+# objc2-quartz-core 0.3. Otherwise the CAMetalLayer and MTLCommandQueue that
+# wgpu hands us are different types from the ones we name.
+block2 = "0.6.2"
+objc2 = "0.6.5"
+objc2-metal = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",                # addPresentedHandler
+    "objc2-core-foundation", # presentedTime (wgpu doesn't turn this one on)
+    "MTLAllocation",
+    "MTLCommandBuffer",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLResource",
+    "MTLTexture",
+] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation", # CACurrentMediaTime
+    "objc2-metal",           # nextDrawable, CAMetalDrawable
+    "CABase",
+    "CALayer",
+    "CAMetalLayer",
+] }

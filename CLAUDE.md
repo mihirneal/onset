@@ -2,33 +2,39 @@
 
 Open-source stimulus presentation software in Rust, meant to replace E-Prime for fMRI experiments at a BCM lab. The goal is a real, production-quality tool that is faster, nicer looking and more fun to run than E-Prime. The lab does not have to adopt it.
 
-## The main point is learning Rust
+## How we work
 
-The person working on this is learning Rust through this project. **They write the code.** Claude explains concepts, writes exercises and reviews their solutions.
+**Claude writes Onset's code.** (Until 2026-10-20 the project was set up as Rust exercises for the owner to fill in. The owner switched to this on 2026-10-20, so don't hand out exercises or `todo!()` stubs. Older code still has a tutorial tone in places.)
 
-- Exercises use tests as the spec: Claude writes function signatures with `todo!()` bodies plus tests, and the learner fills in the bodies. Don't fill in `todo!()` bodies or write feature code unless they ask for it directly.
-- Before handing out an exercise, check it in a scratch copy: a correct solution should pass and a common beginner mistake should fail.
-- After each exercise, review the code, show what more idiomatic Rust would look like, and have them run `cargo clippy`.
-- The learner is new to Rust and knows Python best, so explain Rust ideas by comparing them to Python. They know the fMRI side well (TRs, triggers, onsets, BIDS), so there's no need to explain that.
-- Don't use agents or workflows to build Onset itself.
+- Explain plainly what each change does and why, including the scanner and hardware side when it comes up. The owner knows Python best, so compare to Python when explaining Rust.
+- Run `cargo test` and `cargo clippy --all-targets` before calling anything done.
+- Agents and workflows may be used to build Onset, including writing its code.
+- Claude has full control over git for this repo: commit, create branches and push without asking. Commit finished work so the other Mac gets it.
 
-## Curriculum
+## Roadmap
 
-| # | Onset piece | Rust taught | Status |
-|---|---|---|---|
-| 1 | Seconds ↔ frames conversion (`src/timing.rs`) | functions, number types, `as` casts, tests | **in progress** |
-| 2 | Rejecting bad inputs (negative onsets, 0 Hz) | `Result`/`Option` instead of exceptions | |
-| 3 | Reading the experiment's TOML file | structs, enums, serde | |
-| 4 | Trial schedule from a TSV | `Vec`, iterators, ownership and borrowing | |
-| 5 | Writing BIDS events.tsv | traits, file I/O | |
-| 6 | Fake scanner and serial trigger | threads, channels | |
-| 7 | First window, photodiode square | winit and wgpu | |
-| 8 | Frame loop: a checkerboard running at the desk | putting it all together | |
-| 9 | The lab's real paradigm | — | |
+| # | Piece | Status |
+|---|---|---|
+| 1 | Seconds ↔ frames conversion (`src/timing.rs`) | done |
+| 2 | Rejecting bad inputs (negative onsets, 0 Hz) (`src/timing.rs`) | done |
+| 3 | Reading the experiment's TOML file | |
+| 4 | Trial schedule from a TSV | |
+| 5 | Writing BIDS events.tsv | |
+| 6 | Fake scanner and real trigger input | **done**: fake scanner and TR stats in `src/scanner.rs`, `trigger-log` tool in `src/bin/`. Real pulses confirmed with a phantom on 2026-10-20 (see The scanner rig) |
+| 7 | First window, photodiode square | **done**: `src/render.rs`, `src/present.rs` (Metal present path, exact per-frame on-screen times) |
+| 8 | Frame loop: a checkerboard running at the desk | **done**: `src/bin/checkerboard.rs`, `src/planner.rs`. Ran at the scanner with real triggers on 2026-10-20; holds the last rest screen until the scanner stops, ignores pulses from a scan already under way. Open: about 1 real dropped frame every 208 frames (1.73 s) on the scanner laptop, cause unknown; the planner catches up |
+| 9 | The lab's real paradigm | |
 
-Update the Status column as exercises are finished, so it stays in sync across machines.
+Update the Status column as pieces are finished, so it stays in sync across machines.
 
-Exercise 1 still to do: `cargo init --lib`, put `pub mod timing;` in `src/lib.rs`, replace the three `todo!()`s until `cargo test` passes, then `cargo clippy` and a review. The key lesson is the round-trip test: `as u64` truncates, so the answer has to round.
+## The scanner rig
+
+- **Scanner:** Siemens MAGNETOM Prisma at BCM's Core for Advanced MRI (CAMRI).
+- **Display:** BOLDscreen32, 1920×1080 at 120 Hz (one frame = 8.33 ms). The Mac sees it as a separate screen, not mirrored. Checked from the Mac at the scanner on 2026-10-20. The control-room sticky notes say "32 BOLD 120 Hz" and "3D BOLD 60 Hz".
+- **Video path:** Mac → white USB-C video adapter → Gefen DVI KVM switch in the control room → BOLDscreen. A control-room monitor labeled "SCANNER VIEW" is meant to show what the participant sees. The E-Prime stim PC runs Windows.
+- **Trigger:** Current Designs fORP 932 interface (silver box on the control-room desk, 2×5 green button LEDs, small display and one knob). Confirmed from the Mac on 2026-10-20: USB vendor 0x181b, product 0x0008, shows up as an HID keyboard + mouse + joystick, no serial port. Its USB-A cable comes bundled with the Gefen KVM cable; a laptop needs a USB-C to USB-A adapter. Its display read "HH-UNKNOWN" / "HID KEY BYGRT". In that mode buttons send `b y g r` and the trigger sends `t`. macOS shows the Keyboard Setup Assistant the first time; just close it.
+- **Trigger, confirmed with a phantom on 2026-10-20** (`logs/trigger-dummy-scan-1.tsv`): one `t` per volume. TR 2.8 s measured 2.8001 s, TR 1.5 s measured 1.4991 s, SD about 4 ms (keyboard and terminal delay, not the scanner). 22 measurements gave exactly 22 pulses, so the scanner's dummy volumes send no pulse and the first pulse is the first saved volume. The localizer sends no pulses.
+- **Trigger wiring:** the scanner's trigger arrives as light on an orange fiber with a blue connector, plugged into the fORP's fiber trigger input on the back. The gold SMB jack above it is the electrical (TTL) trigger input and is empty. The bottom LED of the right-hand pair blinks on each pulse; the top one is power. **The blue connector is loose and held with tape**: with it not fully seated, no pulses got through, and one run dropped 16 pulses in the middle. Press it all the way in and check that the LED blinks before every run until it gets a proper connector. The fORP has no trigger settings in its menus; MANUAL CONFIG only picks the button pad.
 
 ## Design decisions
 
@@ -42,7 +48,7 @@ Exercise 1 still to do: `cargo init --lib`, put `pub mod timing;` in `src/lib.rs
 ## Open questions
 
 - Which paradigm to port first (an E-Prime `.es3`/`.ebs3` file or a written description would be ideal). Placeholder examples until then: a checkerboard block localizer and a flanker task with jittered timing.
-- Which trigger hardware the scanner uses (fORP / Current Designs / Arduino / other). The rig config should support fORP in keyboard mode, a serial trigger box, and a simulated scanner.
+- The rig config should support the fORP in keyboard mode (what this scanner uses), a serial trigger box, and a simulated scanner.
 
 ## Setup on a new Mac
 
