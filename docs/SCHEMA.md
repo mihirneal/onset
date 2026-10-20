@@ -103,8 +103,11 @@ expected_hz = 60       # warn if the measured refresh differs by > 1%
 hide_cursor = true
 
 [trigger]
-source = "keyboard"    # "keyboard" | "serial" | "simulated"
-key = "5"              # keyboard: the key the trigger box types
+source = "keyboard"    # "keyboard" | "hid" | "serial" | "simulated"
+key = "5"              # keyboard / hid: the key the trigger box types
+device = "181b:0008"   # hid: USB "vendor:product" of a keyboard-style trigger box, read
+                       # directly whatever window has focus (`onset ports` lists them;
+                       # macOS asks once for Input Monitoring). Its buttons come from it too.
 port = "/dev/tty.usbserial-1410"   # serial: from `onset ports`
 baud = 115200
 serial_char = "5"      # serial: the character that means trigger; other characters are buttons

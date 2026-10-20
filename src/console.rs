@@ -60,12 +60,15 @@ impl Status {
                 for msg in rx {
                     let _ = match msg {
                         Msg::Line(l) => {
-                            line = l;
-                            if live { write!(err, "\r\x1b[2K{line}") } else { Ok(()) }
+                            // A status line wider than the terminal wraps, and
+                            // `\r` then only rewinds its last row, leaving a
+                            // copy behind on every update. Cut it to fit.
+                            line = fit(&l, terminal_width());
+                            if live { write!(err, "\r\x1b[2K{NO_WRAP}{line}{WRAP}") } else { Ok(()) }
                         }
                         Msg::Message(m) => {
                             if live {
-                                write!(err, "\r\x1b[2K{m}\n{line}")
+                                write!(err, "\r\x1b[2K{m}\n{NO_WRAP}{line}{WRAP}")
                             } else {
                                 writeln!(err, "{m}")
                             }
@@ -144,7 +147,86 @@ impl Status {
     }
 }
 
+/// Turn the terminal's line wrapping off and on around the status line, so
+/// even a line that's still too wide (e.g. the window shrank since) is cut
+/// off instead of wrapping.
+const NO_WRAP: &str = "\x1b[?7l";
+const WRAP: &str = "\x1b[?7h";
+
+/// Columns of the terminal stderr is attached to, or 80 if unknown.
+fn terminal_width() -> usize {
+    #[repr(C)]
+    struct WinSize {
+        rows: u16,
+        cols: u16,
+        x_pixels: u16,
+        y_pixels: u16,
+    }
+    unsafe extern "C" {
+        fn ioctl(fd: i32, request: u64, ...) -> i32;
+    }
+    // TIOCGWINSZ on macOS.
+    const TIOCGWINSZ: u64 = 0x4008_7468;
+    let mut ws = WinSize { rows: 0, cols: 0, x_pixels: 0, y_pixels: 0 };
+    // SAFETY: TIOCGWINSZ writes one WinSize into the pointer we pass; fd 2
+    // is stderr. On failure nothing is written and we fall back to 80.
+    let ok = unsafe { ioctl(2, TIOCGWINSZ, &mut ws as *mut WinSize) } == 0;
+    if ok && ws.cols > 0 { ws.cols as usize } else { 80 }
+}
+
+/// Cut `line` to at most `width - 1` visible characters, keeping its color
+/// codes intact (they take no space on screen).
+fn fit(line: &str, width: usize) -> String {
+    let max = width.saturating_sub(1);
+    let mut out = String::with_capacity(line.len());
+    let mut visible = 0;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            // Copy an escape sequence like "\x1b[33m" whole.
+            out.push(c);
+            for d in chars.by_ref() {
+                out.push(d);
+                if d.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+            continue;
+        }
+        if visible == max {
+            // Reset colors in case we cut inside a colored run.
+            out.push_str("\x1b[0m");
+            break;
+        }
+        out.push(c);
+        visible += 1;
+    }
+    out
+}
+
 fn mmss(s: f64) -> String {
     let s = s.max(0.0) as u64;
     format!("{}:{:02}", s / 60, s % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit;
+
+    #[test]
+    fn short_lines_are_untouched() {
+        assert_eq!(fit("hello", 80), "hello");
+    }
+
+    #[test]
+    fn long_lines_are_cut_to_the_width() {
+        assert_eq!(fit("abcdefghij", 6), "abcde\x1b[0m");
+    }
+
+    #[test]
+    fn color_codes_take_no_space() {
+        let colored = "\x1b[36m●\x1b[0m waiting";
+        assert_eq!(fit(colored, 80), colored);
+        assert_eq!(fit(colored, 4), "\x1b[36m●\x1b[0m w\x1b[0m");
+    }
 }

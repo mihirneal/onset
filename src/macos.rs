@@ -84,6 +84,22 @@ pub fn keep_displays_awake() {
     }
 }
 
+/// Ask macOS for the Input Monitoring permission, which reading a USB
+/// keyboard-style device (a fORP trigger box) directly needs. The first time,
+/// macOS shows its own prompt; the grant then applies to the app Onset runs
+/// in (Terminal, iTerm, ...). Returns whether access is granted now.
+pub fn request_input_monitoring() -> bool {
+    #[link(name = "IOKit", kind = "framework")]
+    unsafe extern "C" {
+        fn IOHIDCheckAccess(request: u32) -> u32;
+        fn IOHIDRequestAccess(request: u32) -> bool;
+    }
+    const LISTEN_EVENT: u32 = 1; // kIOHIDRequestTypeListenEvent
+    const GRANTED: u32 = 0; // kIOHIDAccessTypeGranted
+    // SAFETY: plain C calls with a constant argument; no pointers involved.
+    unsafe { IOHIDCheckAccess(LISTEN_EVENT) == GRANTED || IOHIDRequestAccess(LISTEN_EVENT) }
+}
+
 /// One-line description of the window's state, for stall diagnostics.
 pub fn describe(window: &Window) -> String {
     let Ok(handle) = window.window_handle() else { return "no handle".into() };

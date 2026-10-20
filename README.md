@@ -50,7 +50,7 @@ Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. Th
 ## At the scanner
 
 1. Copy `examples/rigs/scanner-forp.toml` (set up for the BOLDscreen32 and fORP at BCM's CAMRI). Onset uses the first display that isn't the laptop's own screen; set `[display] monitor` to override it (`onset displays` lists them). Set `[trigger]` to match your trigger box: a fORP in keyboard mode types `t` (BYGRT mode) or `5` (12345 mode) on each TR; serial boxes use `source = "serial"`. Connect the stimulus display as a separate display, not mirrored.
-2. Run `onset timing-test --rig your-rig.toml` on the projector. You want 0 dropped frames.
+2. Run `onset inputs --rig your-rig.toml` and press each button (and let the scanner send a few pulses) to check every input arrives. Then run `onset timing-test --rig your-rig.toml` on the stimulus display. You want 0 dropped frames.
 3. Run the experiment:
 
    ```bash
