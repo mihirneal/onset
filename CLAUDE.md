@@ -37,6 +37,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 | `examples/` | flanker, checkerboard localizer, NSD core run, NSD resting state, rig files |
 | `hardware/`, `docs/VALIDATION.md` | Photodiode/Arduino timing kit and the measurement protocol (not yet tested on hardware) |
 | `docs/SCHEMA.md`, `docs/TIMING.md` | Format reference and timing model; update them when behavior changes |
+| `docs/SCANNER_CHECKLIST.md` | Step-by-step for a scanner session (setup, each run, image runs, what to measure once); keep it current |
 
 ## Checks
 
@@ -51,7 +52,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Scanner sync:** a USB keyboard-style trigger box read directly (`source = "hid"`: works whatever window has focus, timestamped on arrival on its own thread, opened exclusively so its keys don't leak into other apps; macOS Input Monitoring permission once), the focused window's keyboard (`"keyboard"`; Onset warns loudly if it loses focus), a serial trigger box, or a simulated scanner. The CAMRI fORP types "t" in its BYGRT mode, "5" in 12345 mode. `onset inputs --rig <rig>` prints every trigger and press as it arrives.
 - **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
-- **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock (`onset probe` records it, `onset check-timing` analyses it). The same check works for other presentation software on the same paradigm, for a like-for-like comparison. The analysis was ported from Python and reproduced its summaries on the same fixtures; keep its statistics and output names stable.
+- **Timing check (optional, 2026-10-20: not needed for the lab's use; the BOLDscreen is characterised and Onset logs Metal's own on-screen times):** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock (`onset probe` records it, `onset check-timing` analyses it). The same check works for other presentation software on the same paradigm, for a like-for-like comparison. The analysis was ported from Python and reproduced its summaries on the same fixtures; keep its statistics and output names stable.
 - **Schedules from images:** `onset make-schedule` draws with `rng::PyRandom`, a Mersenne Twister that matches Python's `random.Random`, so a `--seed`/`--run` gives the same schedule the old Python script made (`examples/nsd/schedule.tsv` is seed 1, run 1, and a test pins it). Run-time shuffling uses the separate `rng::Rng`.
 - **NSD:** stimuli may not be redistributed. NSD images live outside the repo (`~/nsd/`), and `.gitignore` blocks `*_nsd*.png`. Never commit them.
 
