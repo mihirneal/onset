@@ -7,16 +7,17 @@ A small Arduino box that records, with microsecond timestamps on its own clock,
   onset), and
 * when the **scanner trigger** pulses arrive.
 
-`tools/analyze_timing.py` then lines this up with Onset's own logs and reports
-how far each logged onset is from the real light onset. The full measurement
-protocol is in [`docs/VALIDATION.md`](../docs/VALIDATION.md).
+`onset probe` records it, and `onset check-timing` then lines it up with
+Onset's own logs and reports how far each logged onset is from the real light
+onset. The full measurement protocol is in
+[`docs/VALIDATION.md`](../docs/VALIDATION.md).
 
 ```
  display ──light──> sensor ─> comparator ─> D2 ┐
-                                               ├─ Arduino ──USB──> capture_probe.py ──> probe.tsv
- scanner TTL ──> opto-isolator ──────────────> D3 ┘                                         │
-                                                                                            v
- Onset ──> data/sub-XX/onset/*_eventlog.tsv, *_inputs.tsv, *_frames.tsv ──> analyze_timing.py
+                                               ├─ Arduino ──USB──> onset probe ──> probe.tsv
+ scanner TTL ──> opto-isolator ──────────────> D3 ┘                                    │
+                                                                                       v
+ Onset ──> data/sub-XX/onset/*_eventlog.tsv, *_inputs.tsv, *_frames.tsv ──> onset check-timing
 ```
 
 ---
@@ -198,8 +199,9 @@ what the fORP does) and the analysis reports it separately
    select the board and port → Upload. (The sketch has not been compiled in CI;
    if your board's core complains, the settings block at the top is the only
    part you should need to touch.)
-2. `python3 -m pip install pyserial` (once), then
-   `python3 tools/capture_probe.py --out probe_run01.tsv` — **start it before
-   starting Onset** and stop it with Ctrl-C after the run ends.
-3. `python3 tools/analyze_timing.py --probe probe_run01.tsv --run data/sub-XX/onset`
-   (see `--help` and `docs/VALIDATION.md`).
+2. `onset probe --out probe_run01.tsv` finds the Arduino by itself (pass
+   `--port` if several serial devices are plugged in; `onset ports` lists
+   them). **Start it before starting Onset** and stop it with Ctrl-C after
+   the run ends.
+3. `onset check-timing --probe probe_run01.tsv --run data/sub-XX/onset`
+   (see `onset check-timing --help` and `docs/VALIDATION.md`).

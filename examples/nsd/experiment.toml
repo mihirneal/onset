@@ -7,7 +7,7 @@
 # border, always on top. Continuous recognition: button 1 = NEW, 2 = OLD.
 #
 # Make a schedule (placeholder images unless you pass --images):
-#   python3 examples/nsd/make_run.py --run 1
+#   onset make-schedule examples/nsd/experiment.toml --run 1
 #   onset run examples/nsd/experiment.toml --rig examples/rigs/dev.toml --simulate --robot --sub 01
 #
 # Differences from the original:
@@ -69,3 +69,20 @@ response = { buttons = ["1", "2"], correct = "{answer}", window = 4.0 }
 [schedule]
 file = "schedule.tsv"
 onset_column = "onset"
+
+# What `onset make-schedule` writes to schedule.tsv: 68 four-second slots after
+# the 12 s blank. Odd runs have 63 images and 5 blank slots, even runs drop
+# the 63rd image (62 + 6). Blanks split the images into stretches of 9-14.
+# About 30% of trials repeat an image seen before (in this run or an earlier
+# one listed in --history).
+[schedule.generate]
+images = "images"
+start = 12.0
+slot = 4.0
+slots = 68
+trials = [63, 62]
+stretch = [9, 14]
+repeat_prob = 0.3
+new_answer = "1"
+old_answer = "2"
+name_id = { column = "nsd_id", prefix = "nsd" }   # shared0001_nsd02951.png -> 2951

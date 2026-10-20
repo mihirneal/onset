@@ -4,7 +4,7 @@ General-purpose, open-source stimulus presentation software in Rust: lean, fast 
 
 What that means for every change:
 - **General, not site-specific.** Site details belong in rig files and examples, never hard-coded. No paradigm is "the" goal; each is one example of what Onset runs.
-- **Lean.** One Rust program does everything, from running to checking timing to building schedules, with nothing else to install. Avoid extra languages and runtimes; Python helpers are being ported into `onset` subcommands.
+- **Lean.** One Rust program does everything, from running to checking timing to building schedules, with nothing else to install. Avoid extra languages and runtimes: the v0.1 Python helpers are now `onset probe`, `onset check-timing` and `onset make-schedule`.
 - **Fast and honest timing.** Frame-accurate presentation with measured (not assumed) onsets in the logs.
 - **Modern and pleasant.** Clear terminal output, good defaults, TOML/TSV instead of code, BIDS output.
 - **Respectful.** Describe Onset on its own merits. Don't name or criticize other presentation software in docs, messages or marketing; naming a file format Onset can read (e.g. an export it imports) is fine.
@@ -31,13 +31,16 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 | `src/output.rs` | Writer thread: BIDS events.tsv/json, raw frames/inputs/eventlog TSVs, run.json |
 | `src/input.rs` | Serial and simulated-scanner threads; every input timestamped on arrival |
 | `src/main.rs`, `src/console.rs`, `src/macos.rs` | CLI, window and frame loop, operator status line, macOS priority and window placement |
+| `src/probe.rs` | `onset probe`: records the Arduino timing probe's serial lines to a TSV |
+| `src/check_timing/` | `onset check-timing`: clock fit on shared triggers, light-edge matching and statistics for Onset runs, `timing-test` and E-Prime exports. Tested in `tests/check_timing.rs` |
+| `src/make_schedule.rs` | `onset make-schedule`: an experiment's schedule TSV from a folder of images, per its `[schedule.generate]` design |
 | `examples/` | flanker, checkerboard localizer, NSD core run, NSD resting state, rig files |
-| `hardware/`, `tools/`, `docs/VALIDATION.md` | Photodiode/Arduino timing kit and analysis scripts (not yet tested on hardware) |
+| `hardware/`, `docs/VALIDATION.md` | Photodiode/Arduino timing kit and the measurement protocol (not yet tested on hardware) |
 | `docs/SCHEMA.md`, `docs/TIMING.md` | Format reference and timing model; update them when behavior changes |
 
 ## Checks
 
-- `cargo test`, `cargo clippy -- -D warnings`, `onset validate` on every example, and `python -m pytest tools` (in a venv). CI on GitHub runs the same on macOS.
+- `cargo test`, `cargo clippy -- -D warnings`, and `onset validate` on every example. CI on GitHub runs the same on macOS.
 - End-to-end without hardware: `onset run <exp> --rig examples/rigs/dev.toml --simulate --robot --sub 99 --out <scratch dir>`. For a quick check, copy the experiment with the `instructions` removed and fewer volumes. `ONSET_SNAPSHOTS=<dir>` saves each event's first frame as a PNG; it disturbs timing, so use it only for checking visuals.
 - Test runs open windows on the owner's screen. Keep them short, and ask before anything fullscreen.
 
@@ -48,7 +51,8 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Scanner sync:** a USB keyboard-style trigger box read directly (`source = "hid"`: works whatever window has focus, timestamped on arrival on its own thread, opened exclusively so its keys don't leak into other apps; macOS Input Monitoring permission once), the focused window's keyboard (`"keyboard"`; Onset warns loudly if it loses focus), a serial trigger box, or a simulated scanner. The CAMRI fORP types "t" in its BYGRT mode, "5" in 12345 mode. `onset inputs --rig <rig>` prints every trigger and press as it arrives.
 - **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
-- **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock. The same check works for other presentation software on the same paradigm, for a like-for-like comparison.
+- **Timing check:** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock (`onset probe` records it, `onset check-timing` analyses it). The same check works for other presentation software on the same paradigm, for a like-for-like comparison. The analysis was ported from Python and reproduced its summaries on the same fixtures; keep its statistics and output names stable.
+- **Schedules from images:** `onset make-schedule` draws with `rng::PyRandom`, a Mersenne Twister that matches Python's `random.Random`, so a `--seed`/`--run` gives the same schedule the old Python script made (`examples/nsd/schedule.tsv` is seed 1, run 1, and a test pins it). Run-time shuffling uses the separate `rng::Rng`.
 - **NSD:** stimuli may not be redistributed. NSD images live outside the repo (`~/nsd/`), and `.gitignore` blocks `*_nsd*.png`. Never commit them.
 
 ## The scanner rig (CAMRI, confirmed 2026-10-20)
@@ -70,6 +74,7 @@ Since 2026-10-13, Claude builds and fixes Onset directly. The owner is a Rust be
 - **Unexplained drops:** about one real dropped frame every 208 frames (1.73 s) on the scanner laptop at 120 Hz, confirmed by Metal's own timestamps, with both timing methods. Cause unknown.
 - Needed from the owner: the viewing distance to the BOLDscreen (paradigms given in degrees of visual angle need it to convert to pixels).
 - Not supported yet: audio, video, scripting/staircases, eye tracking, pRF/fLoc-style animated or masked stimuli, editor UI.
+- **GUI requirement: walk users through macOS permissions.** Reading a USB trigger box directly (`source = "hid"`) needs **Input Monitoring**, and filtering its keystrokes out of other apps (`keyfilter.rs`) needs **Accessibility**, both granted to the app Onset runs in. Inside the Claude app these were already on; anywhere else (Terminal, iTerm, a packaged Onset.app) they aren't. The GUI must check both on first run (`IOHIDCheckAccess`, `CGPreflightPostEventAccess`), explain in plain words why each is needed, open the right System Settings pane, and confirm once granted (Input Monitoring needs an app restart). Until then the CLI prints a note at startup.
 
 ## Setup on a new Mac
 
