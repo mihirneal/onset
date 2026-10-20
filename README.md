@@ -1,6 +1,6 @@
 # Onset
 
-Frame-accurate stimulus presentation for fMRI, written in Rust. An open-source replacement for E-Prime.
+Frame-accurate, open-source stimulus presentation for fMRI and beyond, written in Rust.
 
 - **Experiments are TOML files**, not code. Trial lists come from a TSV, so schedules from optseq2 / AFNI drop straight in.
 - **Scanner-synced timing.** Every onset is scheduled as an absolute time after the first kept trigger, and snaps to the nearest refresh. A late frame can never push the rest of the run off schedule.

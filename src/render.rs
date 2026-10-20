@@ -106,7 +106,7 @@ impl Renderer {
 
         let caps = surface.get_capabilities(&adapter);
         // A non-sRGB format sends color values to the display unmodified,
-        // like E-Prime/Psychtoolbox: [128,128,128] means pixel value 128.
+        // like other stimulus software: [128,128,128] means pixel value 128.
         let format = caps
             .formats
             .iter()
