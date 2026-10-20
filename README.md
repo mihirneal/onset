@@ -2,6 +2,8 @@
 
 Frame-accurate, open-source stimulus presentation for fMRI and beyond, written in Rust.
 
+Developed and tested at the Center for Advanced Magnetic Resonance Imaging (CAMRI), Baylor College of Medicine, Houston, TX.
+
 - **Experiments are TOML files**, not code. Trial lists come from a TSV, so schedules from optseq2 / AFNI drop straight in.
 - **Scanner-synced timing.** Every onset is scheduled as an absolute time after the first kept trigger, and snaps to the nearest refresh. A late frame can never push the rest of the run off schedule.
 - **Honest logs.** Every frame, trigger, and button press is timestamped. Each event records its planned onset, its measured onset, and the delay between them.
