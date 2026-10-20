@@ -8,6 +8,7 @@ pub mod check_timing;
 pub mod color;
 pub mod experiment;
 pub mod input;
+pub mod keyfilter;
 pub mod make_schedule;
 pub mod output;
 pub mod probe;

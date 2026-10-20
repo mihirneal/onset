@@ -18,7 +18,9 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Phase {
-    /// Showing instructions; the operator presses Space to continue.
+    /// Showing instructions until the scanner's first (kept) trigger starts
+    /// the run, so nobody has to touch the stimulus computer. The operator
+    /// can press Space to move on to the waiting screen early.
     Instructions,
     /// Waiting for the first (non-dummy) trigger.
     Waiting,
@@ -278,8 +280,8 @@ impl<'e> Run<'e> {
         match input {
             Input::Trigger => {
                 self.triggers.push(t);
-                if self.phase == Phase::Waiting && self.triggers.len() as u32 > self.exp.scanner.dummy_volumes
-                {
+                let waiting = matches!(self.phase, Phase::Instructions | Phase::Waiting);
+                if waiting && self.triggers.len() as u32 > self.exp.scanner.dummy_volumes {
                     self.t0 = Some(t);
                     self.phase = Phase::Running;
                     self.lock_period();
@@ -288,8 +290,6 @@ impl<'e> Run<'e> {
             Input::Continue => {
                 if self.phase == Phase::Instructions {
                     self.phase = Phase::Waiting;
-                    // Triggers that arrived during the instructions don't count.
-                    self.triggers.clear();
                 }
             }
             Input::Abort => {
@@ -825,5 +825,17 @@ mod tests {
         assert_eq!(recs.len(), 1, "{recs:?}");
         assert_eq!(recs[0].event, "target");
         assert_eq!(recs[0].outcome.as_deref(), Some("miss"));
+    }
+
+    #[test]
+    fn the_first_trigger_starts_the_run_from_the_instructions() {
+        let mut e = experiment();
+        e.experiment.instructions = Some("Keep your eyes on the dot.".into());
+        let tl = compile(&e, 1, HZ).unwrap();
+        let mut run = Run::new(&e, tl, HZ, 3);
+        assert_eq!(run.phase, Phase::Instructions);
+        run.input(Input::Trigger, 1.0);
+        assert_eq!(run.phase, Phase::Running);
+        assert_eq!(run.t0, Some(1.0));
     }
 }

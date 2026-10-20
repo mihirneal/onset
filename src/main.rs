@@ -72,8 +72,17 @@ enum Cmd {
     },
     /// List connected monitors (for the rig's `[display] monitor`).
     Displays,
-    /// List serial ports (for the rig's `[trigger] port`).
+    /// List serial ports and USB input devices (for the rig's `[trigger]`).
     Ports,
+    /// Print every trigger and button press as it arrives, without a window:
+    /// a quick check of the trigger box and button pads before a run.
+    Inputs {
+        #[arg(long)]
+        rig: Option<PathBuf>,
+        /// Stop after this many seconds (default: until Ctrl-C).
+        #[arg(long)]
+        seconds: Option<f64>,
+    },
     /// Record the photodiode/trigger probe (Arduino) to a TSV file.
     Probe(onset::probe::Args),
     /// Compare logged onsets with photodiode-measured light onsets.
@@ -132,6 +141,7 @@ fn main() {
         Cmd::TimingTest { rig, seconds, windowed } => cmd_timing_test(rig.as_deref(), seconds, windowed),
         Cmd::Displays => cmd_displays(),
         Cmd::Ports => cmd_ports(),
+        Cmd::Inputs { rig, seconds } => cmd_inputs(rig.as_deref(), seconds),
         Cmd::Probe(args) => onset::probe::run(args),
         Cmd::CheckTiming(args) => onset::check_timing::run(args),
         Cmd::MakeSchedule(args) => onset::make_schedule::run(args),
@@ -261,6 +271,103 @@ fn cmd_ports() -> Result<()> {
         };
         println!("{}  {}", bold(&p.port_name), dim(&desc));
     }
+
+    println!();
+    println!("{}", bold("USB input devices (for [trigger] source = \"hid\", device = \"vendor:product\"):"));
+    let api = hidapi::HidApi::new().context("can't list USB input devices")?;
+    let mut seen = std::collections::BTreeSet::new();
+    for d in api.device_list() {
+        // One line per device, however many parts (keyboard, mouse, ...) it has.
+        if !seen.insert((d.vendor_id(), d.product_id())) || d.vendor_id() == 0 {
+            continue;
+        }
+        println!(
+            "{}  {}",
+            bold(&format!("{:04x}:{:04x}", d.vendor_id(), d.product_id())),
+            dim(&format!(
+                "{} {}",
+                d.manufacturer_string().unwrap_or_default(),
+                d.product_string().unwrap_or_default()
+            ))
+        );
+    }
+    Ok(())
+}
+
+fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
+    let rig = load_rig(rig_path)?;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    match rig.trigger.source {
+        TriggerSource::Hid => {
+            let (vendor, product) = rig
+                .trigger
+                .device
+                .as_deref()
+                .and_then(input::parse_usb_id)
+                .context("[trigger] device is missing or not \"vendor:product\"")?;
+            if !macos::request_input_monitoring() {
+                println!(
+                    "{} macOS hasn't granted Input Monitoring yet. Allow it for this terminal app in \
+                     System Settings → Privacy & Security → Input Monitoring, then run this again.",
+                    yellow("note:")
+                );
+            }
+            let reader = input::spawn_hid(vendor, product, tx, stop.clone())?;
+            let filtered = !reader.exclusive && onset::keyfilter::start();
+            println!(
+                "Opened {:04x}:{:04x} {}.",
+                vendor,
+                product,
+                match (reader.exclusive, filtered) {
+                    (true, _) => "exclusively (its keys don't reach other apps)",
+                    (false, true) => "shared, with its keystrokes filtered out of other apps",
+                    (false, false) => "shared (its keys also reach the app in front; allow Accessibility to filter them)",
+                }
+            );
+        }
+        TriggerSource::Serial => {
+            input::spawn_serial(rig.trigger.port.as_deref().unwrap_or_default(), rig.trigger.baud, tx, stop.clone())?;
+        }
+        TriggerSource::Keyboard | TriggerSource::Simulated => {
+            anyhow::bail!(
+                "this rig's trigger comes through the window (keyboard) or is simulated; `onset inputs` reads \
+                 USB (\"hid\") and serial trigger boxes"
+            );
+        }
+    }
+    println!("Listening. Press buttons or start the scanner; Ctrl-C stops.");
+    let start = Instant::now();
+    let mut triggers = 0u32;
+    let mut last_trigger: Option<Instant> = None;
+    loop {
+        if seconds.is_some_and(|s| start.elapsed().as_secs_f64() >= s) {
+            break;
+        }
+        match rx.recv_timeout(Duration::from_millis(200)) {
+            Ok(RawInput::Key { t, source, raw }) => {
+                let at = t.saturating_duration_since(start).as_secs_f64();
+                let (input, _, label) = App::classify(&rig, source, &raw);
+                let what = match input {
+                    Some(Input::Trigger) => {
+                        triggers += 1;
+                        let gap = last_trigger.map_or(String::new(), |p| {
+                            format!("  (+{:.3} s)", t.saturating_duration_since(p).as_secs_f64())
+                        });
+                        last_trigger = Some(t);
+                        green(&format!("trigger {triggers}{gap}"))
+                    }
+                    Some(_) => format!("button {}", bold(&label)),
+                    None => dim("not in the rig"),
+                };
+                println!("{at:9.3} s  key {raw:?}  {what}");
+            }
+            Ok(RawInput::Error(e)) => anyhow::bail!(e),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
     Ok(())
 }
 
@@ -408,6 +515,11 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     let trigger_desc = match (simulate_tr, rig.trigger.source) {
         (Some(tr), _) => format!("simulated scanner, TR {tr} s"),
         (None, TriggerSource::Keyboard) => format!("keyboard key {:?}", rig.trigger.key),
+        (None, TriggerSource::Hid) => format!(
+            "USB device {} key {:?} (read directly; window focus doesn't matter)",
+            rig.trigger.device.as_deref().unwrap_or("?"),
+            rig.trigger.key
+        ),
         (None, TriggerSource::Serial) => format!(
             "serial {} @ {} baud, char {:?}",
             rig.trigger.port.as_deref().unwrap_or("?"),
@@ -422,7 +534,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         paths.events_tsv().display()
     );
     println!("   trigger: {trigger_desc}");
-    println!("   {}", dim("Esc aborts (data is saved) · Space continues past instructions"));
+    println!("   {}", dim("the first scanner pulse starts the run · Ctrl-C here or Esc on the stimulus window aborts (data is saved)"));
 
     let setup = RunSetup {
         exp,
@@ -704,6 +816,25 @@ impl App {
                 copy_provenance(&setup);
                 *self.writer.lock().unwrap() = Some((tx.clone(), handle));
 
+                if setup.rig.trigger.source == TriggerSource::Hid && setup.simulate_tr.is_none() {
+                    let (vendor, product) = setup
+                        .rig
+                        .trigger
+                        .device
+                        .as_deref()
+                        .and_then(input::parse_usb_id)
+                        .context("[trigger] device is missing or not \"vendor:product\"")?;
+                    macos::request_input_monitoring();
+                    let reader = input::spawn_hid(vendor, product, self.raw_tx.clone(), self.stop.clone())?;
+                    if !reader.exclusive && !onset::keyfilter::start() {
+                        println!(
+                            "   {} the trigger box's keys also reach the app in front (stray keys or alert \
+                             sounds; the data is unaffected). To stop that, allow Accessibility for this \
+                             terminal app in System Settings → Privacy & Security → Accessibility.",
+                            yellow("note:")
+                        );
+                    }
+                }
                 if setup.rig.trigger.source == TriggerSource::Serial && setup.simulate_tr.is_none() {
                     input::spawn_serial(
                         setup.rig.trigger.port.as_deref().unwrap_or_default(),
@@ -744,11 +875,18 @@ impl App {
         let trigger = match source {
             Source::Simulated => true,
             Source::Keyboard => rig.trigger.source == TriggerSource::Keyboard && raw == rig.trigger.key,
+            Source::Hid => raw == rig.trigger.key,
             Source::Serial => raw == rig.trigger.serial_char,
             Source::Robot => false,
         };
         if trigger {
             return (Some(Input::Trigger), "trigger", "trigger".into());
+        }
+        // With a USB trigger box read directly, its buttons come from there;
+        // the same keys typed on the laptop are ignored, so a press can't
+        // count twice.
+        if source == Source::Keyboard && rig.trigger.source == TriggerSource::Hid {
+            return (None, "ignored", String::new());
         }
         match rig.button_for(raw) {
             Some(label) => (Some(Input::Button(label.to_string())), "button", label.to_string()),
@@ -817,6 +955,9 @@ impl App {
         if matches!(ar.run.phase, Phase::Done(_)) {
             return;
         }
+        // A USB trigger box read directly doesn't need focus; only the
+        // operator keys (Space, Esc) do.
+        let direct = ar.setup.rig.trigger.source == TriggerSource::Hid && ar.setup.simulate_tr.is_none();
         if let Some(log) = &ar.log {
             let label = if focused { "focus-gained" } else { "focus-lost" };
             let _ = log.send(LogMsg::Input(output::InputRecord {
@@ -827,7 +968,9 @@ impl App {
                 label: label.into(),
             }));
         }
-        if focused {
+        if direct {
+            // Nothing to warn about: triggers and buttons don't need focus.
+        } else if focused {
             self.console.message(&format!("{} Onset window has keyboard focus again", green("✓")));
         } else {
             self.console.message(&format!(
