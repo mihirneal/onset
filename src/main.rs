@@ -304,7 +304,18 @@ fn cmd_inputs(rig_path: Option<&Path>, seconds: Option<f64>) -> Result<()> {
                     yellow("note:")
                 );
             }
-            input::spawn_hid(vendor, product, tx, stop.clone())?;
+            let reader = input::spawn_hid(vendor, product, tx, stop.clone())?;
+            let filtered = !reader.exclusive && onset::keyfilter::start();
+            println!(
+                "Opened {:04x}:{:04x} {}.",
+                vendor,
+                product,
+                match (reader.exclusive, filtered) {
+                    (true, _) => "exclusively (its keys don't reach other apps)",
+                    (false, true) => "shared, with its keystrokes filtered out of other apps",
+                    (false, false) => "shared (its keys also reach the app in front; allow Accessibility to filter them)",
+                }
+            );
         }
         TriggerSource::Serial => {
             input::spawn_serial(rig.trigger.port.as_deref().unwrap_or_default(), rig.trigger.baud, tx, stop.clone())?;
@@ -805,7 +816,15 @@ impl App {
                         .and_then(input::parse_usb_id)
                         .context("[trigger] device is missing or not \"vendor:product\"")?;
                     macos::request_input_monitoring();
-                    input::spawn_hid(vendor, product, self.raw_tx.clone(), self.stop.clone())?;
+                    let reader = input::spawn_hid(vendor, product, self.raw_tx.clone(), self.stop.clone())?;
+                    if !reader.exclusive && !onset::keyfilter::start() {
+                        println!(
+                            "   {} the trigger box's keys also reach the app in front (stray keys or alert \
+                             sounds; the data is unaffected). To stop that, allow Accessibility for this \
+                             terminal app in System Settings → Privacy & Security → Accessibility.",
+                            yellow("note:")
+                        );
+                    }
                 }
                 if setup.rig.trigger.source == TriggerSource::Serial && setup.simulate_tr.is_none() {
                     input::spawn_serial(

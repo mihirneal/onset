@@ -7,6 +7,7 @@
 pub mod color;
 pub mod experiment;
 pub mod input;
+pub mod keyfilter;
 pub mod output;
 pub mod render;
 pub mod rig;

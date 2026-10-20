@@ -100,16 +100,24 @@ pub fn spawn_serial(
 /// reaching other apps (no stray "t"s typed into whatever is in front). On
 /// macOS this needs the Input Monitoring permission for the app Onset runs
 /// in; `macos::request_input_monitoring` asks for it.
-pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
+/// A running USB reader thread, and whether macOS gave it the device to
+/// itself (`exclusive`: its keys don't reach other apps).
+pub struct HidReader {
+    pub handle: JoinHandle<()>,
+    pub exclusive: bool,
+}
+
+pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<AtomicBool>) -> Result<HidReader> {
     // Everything happens on the reader thread, including starting the HID
     // library: on macOS that briefly runs the calling thread's event loop,
     // which would re-enter the window system if done on the main thread.
     // The thread reports back whether it could open the device.
-    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<bool>>();
     let handle = std::thread::Builder::new().name("onset-hid".into()).spawn(move || {
         let device = match open_hid(vendor, product) {
             Ok(d) => {
-                let _ = ready_tx.send(Ok(()));
+                let exclusive = d.is_open_exclusive().unwrap_or(false);
+                let _ = ready_tx.send(Ok(exclusive));
                 d
             }
             Err(e) => {
@@ -127,6 +135,7 @@ pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<Atom
                     let now_held = keys_in_report(&buf[..n]);
                     // A key counts once, when it first appears in a report.
                     for &usage in now_held.iter().filter(|u| !held.contains(u)) {
+                        crate::keyfilter::saw_usb_key(usage);
                         if let Some(c) = usage_char(usage) {
                             let ev = RawInput::Key { t, source: Source::Hid, raw: c.to_string() };
                             if tx.send(ev).is_err() {
@@ -144,7 +153,7 @@ pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<Atom
         }
     })?;
     match ready_rx.recv() {
-        Ok(Ok(())) => Ok(handle),
+        Ok(Ok(exclusive)) => Ok(HidReader { handle, exclusive }),
         Ok(Err(e)) => Err(e),
         Err(_) => anyhow::bail!("the USB reader thread stopped before opening the device"),
     }
