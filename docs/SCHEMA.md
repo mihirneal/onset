@@ -118,6 +118,31 @@ Only the first response in a window counts. Every press is still recorded in `in
 
 With no `file` or `rows`, the trial runs once. `onset run --schedule other.tsv` replaces the schedule for one run, which is handy when every run has its own trial list. Shuffling or repeating can't be combined with `onset_column`; generate a shuffled schedule file instead.
 
+### `[schedule.generate]`
+
+A design for `onset make-schedule`, which writes the schedule file from a folder of images. Running the experiment ignores this table. Trials sit in fixed slots, `start + k × slot` seconds after t = 0; some slots stay blank (the baseline shows). With `repeat_prob`, some trials show an image seen before ("old") and the rest show unseen ones ("new"), for continuous recognition.
+
+| key | default | |
+|---|---|---|
+| `images` | none | Folder of PNG/JPEG images, relative to the experiment file (`--images` overrides it) |
+| `start` | `0` | Onset of the first slot (s) |
+| `slot` | required | Seconds from one slot's onset to the next |
+| `slots` | required | Slots per run |
+| `trials` | `slots` | Image trials per run; the other slots are blank. A list such as `[63, 62]` cycles through runs (run 1 takes the first entry). Blanks are placed for the largest entry; runs with fewer trials leave their last image slots blank |
+| `stretch` | blanks anywhere | `[min, max]`: blank slots split the image trials into stretches of min–max trials |
+| `repeat_prob` | `0` | Chance that a trial shows an image seen before (`--repeat-prob` overrides it) |
+| `new_answer`, `old_answer` | `"1"`, `"2"` | The `answer` column for unseen and seen images |
+| `name_id` | none | `{ column = "id", prefix = "img" }` copies the number after `prefix` in each file name into its own column, e.g. an image database's ID |
+
+```bash
+onset make-schedule experiment.toml --run 2 --images ~/stimuli \
+    --history ~/study/sub-01_seen.txt --out ~/study/sub-01/run02.tsv
+```
+
+The schedule gets the columns `onset`, `stim_file`, `memory` (`new`/`old`), `answer` and `image` (the file name without its extension), plus the `name_id` column. Images inside the experiment's folder are listed relative to it, others by absolute path. Without `--out` it overwrites the experiment's `[schedule] file`.
+
+`--history` keeps old and new honest across runs and sessions: images listed in it count as seen, and each run's new images are appended to it. Use one history file per participant. `--seed` (default 1) and `--run` together fix the draw; the generator draws exactly like Python's `random.Random(seed × 1000 + run)`, so schedules made that way in Python come out identical. [`examples/nsd`](../examples/nsd) uses this.
+
 ## Rig file
 
 ```toml
