@@ -22,6 +22,8 @@ pub struct Rig {
     pub photodiode: Photodiode,
     #[serde(default)]
     pub output: Output,
+    #[serde(default)]
+    pub site: Site,
 }
 
 fn default_buttons() -> BTreeMap<String, String> {
@@ -195,11 +197,30 @@ fn default_out_dir() -> PathBuf {
     "data".into()
 }
 
+/// Where the scans happen, for the welcome screen.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Site {
+    /// Logo (PNG or JPEG) in a top corner of the welcome screen. Relative to
+    /// the rig file; `~/` is the home folder.
+    pub logo: Option<PathBuf>,
+}
+
+/// `p` from a rig file at `rig_file`: `~/` is the home folder, relative paths
+/// are relative to the rig file.
+fn resolve(rig_file: &Path, p: &Path) -> PathBuf {
+    if let (Ok(rest), Some(home)) = (p.strip_prefix("~"), std::env::var_os("HOME")) {
+        return PathBuf::from(home).join(rest);
+    }
+    rig_file.parent().unwrap_or(Path::new("")).join(p)
+}
+
 impl Rig {
     pub fn load(path: &Path) -> Result<Rig> {
         let text = std::fs::read_to_string(path)
             .with_context(|| format!("can't read rig file {}", path.display()))?;
-        let rig: Rig = toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}:\n{e}", path.display()))?;
+        let mut rig: Rig = toml::from_str(&text).map_err(|e| anyhow::anyhow!("{}:\n{e}", path.display()))?;
+        rig.site.logo = rig.site.logo.map(|logo| resolve(path, &logo));
         if rig.trigger.source == TriggerSource::Hid
             && rig.trigger.device.as_deref().and_then(crate::input::parse_usb_id).is_none()
         {
@@ -225,5 +246,19 @@ impl Rig {
 
     pub fn is_known_button(&self, label: &str) -> bool {
         self.buttons.values().any(|b| b == label)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logo_paths_are_relative_to_the_rig_file() {
+        let rig = Path::new("examples/rigs/scanner.toml");
+        assert_eq!(resolve(rig, Path::new("logo.png")), Path::new("examples/rigs/logo.png"));
+        assert_eq!(resolve(rig, Path::new("/srv/logo.png")), Path::new("/srv/logo.png"));
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(resolve(rig, Path::new("~/assets/logo.png")), Path::new(&home).join("assets/logo.png"));
     }
 }

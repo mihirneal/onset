@@ -15,6 +15,13 @@ baseline = "fixation"
 instructions = "Look at the MIDDLE arrow.\n\nIndex finger (1) if it points ←\nMiddle finger (2) if it points →\n\nRespond as fast and accurately as you can."
 waiting_text = "Get ready…"
 
+# Animated welcome screen behind the instructions and the wait for the
+# scanner, with the experiment name as the title. `onset run --name "First Last"`
+# puts the participant's name in front (shown only, never saved). The rig's
+# [site] logo goes in the corner. Gone from the first trigger.
+[welcome]
+style = "monochrome"
+
 [scanner]
 tr = 2.0
 dummy_volumes = 0

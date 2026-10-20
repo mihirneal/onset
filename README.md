@@ -8,6 +8,7 @@ Developed and tested at the Center for Advanced Magnetic Resonance Imaging (CAMR
 - **Scanner-synced timing.** Every onset is scheduled as an absolute time after the first kept trigger, and snaps to the nearest refresh. A late frame can never push the rest of the run off schedule.
 - **Honest logs.** Every frame, trigger, and button press is timestamped. Each event records its planned onset, its measured onset, and the delay between them.
 - **BIDS output.** `sub-01_task-x_run-01_events.tsv` + `events.json` are ready for fMRIPrep, nilearn, FSL, or SPM.
+- **A polished start.** An optional animated welcome screen puts the participant's name in front, with the study title and your site's logo, while the instructions and the wait for the scanner are on screen. It's gone the moment the first trigger arrives, and the name is never saved.
 - **Built-in timing checks.** A photodiode patch flashes in a screen corner at every onset. `onset timing-test` measures frame pacing, and with a small Arduino rig `onset probe` and `onset check-timing` measure when light really appeared, onset by onset.
 - **One program.** Running, checking timing and building schedules are all `onset` commands, with nothing else to install.
 
@@ -55,7 +56,7 @@ Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. Th
 
 ## At the scanner
 
-1. Copy `examples/rigs/scanner-forp.toml` (a 120 Hz MR display and a fORP trigger box read over USB) and adjust it. Onset uses the first display that isn't the laptop's own screen; set `[display] monitor` to override it (`onset displays` lists them). Set `[trigger]` to match your trigger box: a fORP in keyboard mode types `t` (BYGRT mode) or `5` (12345 mode) on each TR; serial boxes use `source = "serial"`. Connect the stimulus display as a separate display, not mirrored.
+1. Copy `examples/rigs/scanner-forp.toml` (a 120 Hz MR display and a fORP trigger box read over USB) and adjust it. Onset uses the first display that isn't the laptop's own screen; set `[display] monitor` to override it (`onset displays` lists them). Set `[trigger]` to match your trigger box: a fORP in keyboard mode types `t` (BYGRT mode) or `5` (12345 mode) on each TR; serial boxes use `source = "serial"`. Connect the stimulus display as a separate display, not mirrored. Its `[site] logo` puts a logo on the welcome screen; point it at your own.
 2. Run `onset inputs --rig your-rig.toml` and press each button (and let the scanner send a few pulses) to check every input arrives. Then run `onset timing-test --rig your-rig.toml` on the stimulus display. You want 0 dropped frames.
 3. Run the experiment:
 
@@ -63,7 +64,7 @@ Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. Th
    onset run task.toml --rig your-rig.toml --sub 07 --ses 1
    ```
 
-   The run number is chosen automatically: Onset picks the next run without data, and never overwrites a run unless you pass `--force`. The terminal shows a live status line: elapsed time, TR count, trial, dropped frames, and the last response.
+   Add `--name "First Last"` to show the participant's name on the welcome screen (experiments with a `[welcome]` table, like the examples). The name is only shown, never saved. The run number is chosen automatically: Onset picks the next run without data, and never overwrites a run unless you pass `--force`. The terminal shows a live status line: elapsed time, TR count, trial, dropped frames, and the last response.
 
 ## Output
 
