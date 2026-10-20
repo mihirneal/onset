@@ -101,27 +101,22 @@ pub fn spawn_serial(
 /// macOS this needs the Input Monitoring permission for the app Onset runs
 /// in; `macos::request_input_monitoring` asks for it.
 pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<AtomicBool>) -> Result<JoinHandle<()>> {
-    let api = hidapi::HidApi::new().context("can't start the USB HID library")?;
-    let matching: Vec<&hidapi::DeviceInfo> =
-        api.device_list().filter(|d| d.vendor_id() == vendor && d.product_id() == product).collect();
-    // A device can show up several times (keyboard, mouse, joystick parts);
-    // we want its keyboard part: usage page 1 (generic desktop), usage 6.
-    let info = matching
-        .iter()
-        .find(|d| d.usage_page() == 1 && d.usage() == 6)
-        .or_else(|| matching.first())
-        .with_context(|| format!("no USB device {vendor:04x}:{product:04x} connected (`onset ports` lists them)"))?;
-    let open = |exclusive: bool| {
-        api.set_open_exclusive(exclusive);
-        api.open_path(info.path())
-    };
-    let device = open(true).or_else(|_| open(false)).with_context(|| {
-        format!(
-            "can't read USB device {vendor:04x}:{product:04x}. On macOS, allow Input Monitoring for the app \
-             running Onset (System Settings → Privacy & Security → Input Monitoring), then restart it"
-        )
-    })?;
-    Ok(std::thread::Builder::new().name("onset-hid".into()).spawn(move || {
+    // Everything happens on the reader thread, including starting the HID
+    // library: on macOS that briefly runs the calling thread's event loop,
+    // which would re-enter the window system if done on the main thread.
+    // The thread reports back whether it could open the device.
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel::<Result<()>>();
+    let handle = std::thread::Builder::new().name("onset-hid".into()).spawn(move || {
+        let device = match open_hid(vendor, product) {
+            Ok(d) => {
+                let _ = ready_tx.send(Ok(()));
+                d
+            }
+            Err(e) => {
+                let _ = ready_tx.send(Err(e));
+                return;
+            }
+        };
         let mut buf = [0u8; 64];
         let mut held: Vec<u8> = Vec::new();
         while !stop.load(Ordering::Relaxed) {
@@ -147,7 +142,36 @@ pub fn spawn_hid(vendor: u16, product: u16, tx: Sender<RawInput>, stop: Arc<Atom
                 }
             }
         }
-    })?)
+    })?;
+    match ready_rx.recv() {
+        Ok(Ok(())) => Ok(handle),
+        Ok(Err(e)) => Err(e),
+        Err(_) => anyhow::bail!("the USB reader thread stopped before opening the device"),
+    }
+}
+
+/// Find the device's keyboard part and open it, exclusively if macOS allows.
+fn open_hid(vendor: u16, product: u16) -> Result<hidapi::HidDevice> {
+    let api = hidapi::HidApi::new().context("can't start the USB HID library")?;
+    let matching: Vec<&hidapi::DeviceInfo> =
+        api.device_list().filter(|d| d.vendor_id() == vendor && d.product_id() == product).collect();
+    // A device can show up several times (keyboard, mouse, joystick parts);
+    // we want its keyboard part: usage page 1 (generic desktop), usage 6.
+    let info = matching
+        .iter()
+        .find(|d| d.usage_page() == 1 && d.usage() == 6)
+        .or_else(|| matching.first())
+        .with_context(|| format!("no USB device {vendor:04x}:{product:04x} connected (`onset ports` lists them)"))?;
+    let open = |exclusive: bool| {
+        api.set_open_exclusive(exclusive);
+        api.open_path(info.path())
+    };
+    open(true).or_else(|_| open(false)).with_context(|| {
+        format!(
+            "can't read USB device {vendor:04x}:{product:04x}. On macOS, allow Input Monitoring for the app \
+             running Onset (System Settings → Privacy & Security → Input Monitoring), then restart it"
+        )
+    })
 }
 
 /// The key usage codes held down in a keyboard input report:
