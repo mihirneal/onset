@@ -15,6 +15,10 @@ pub const DEFAULT_QUIET_S: f64 = 5.0;
 /// trigger fiber) doesn't look like the end of the scan.
 pub const QUIET_TRS: f64 = 2.5;
 
+/// A pulse this soon after Onset gets ready is taken as the tail of a scan
+/// that was already under way (see `PulseWatch::clear_to_start`).
+pub const STARTUP_GRACE_S: f64 = 2.0;
+
 /// The pulse times seen so far, and what they say about the scan.
 ///
 /// Times are seconds from any fixed starting point, as long as every call
@@ -68,6 +72,19 @@ impl PulseWatch {
     pub fn quiet_since(&self, since_s: f64, now_s: f64) -> bool {
         let latest = self.last_s().map_or(since_s, |p| p.max(since_s));
         now_s - latest >= self.stopped_after_s()
+    }
+
+    /// Before a run: may a pulse at `now_s` start it? Until any stray pulse
+    /// has been seen, yes once Onset has been ready for `STARTUP_GRACE_S`.
+    /// That's kept short, so a scan started right after launching Onset is
+    /// never mistaken for an earlier one. Once stray pulses have come (a scan
+    /// was already under way), the scanner must go quiet for the full
+    /// `stopped_after_s` first.
+    pub fn clear_to_start(&self, ready_s: f64, now_s: f64) -> bool {
+        match self.last_s() {
+            None => now_s - ready_s >= STARTUP_GRACE_S,
+            Some(last) => now_s - last.max(ready_s) >= self.stopped_after_s(),
+        }
     }
 
     /// True if there has been a pulse and none for long enough since.

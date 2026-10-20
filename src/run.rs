@@ -495,7 +495,7 @@ impl<'e> Run<'e> {
                     && self.triggers.is_empty()
                     && let Some(ready) = self.ready_at
                 {
-                    let quiet = self.before_first.quiet_since(ready, t);
+                    let quiet = self.before_first.clear_to_start(ready, t);
                     self.before_first.pulse(t);
                     if !quiet {
                         self.ignored_triggers += 1;
@@ -1038,7 +1038,7 @@ impl<'e> Run<'e> {
             Phase::Instructions | Phase::Waiting => {
                 if self.announce_ready
                     && let Some(ready) = self.ready_at
-                    && self.before_first.quiet_since(ready, now)
+                    && self.before_first.clear_to_start(ready, now)
                 {
                     self.announce_ready = false;
                     self.notices.push(Notice::ReadyAgain);
@@ -1632,6 +1632,18 @@ mod tests {
         // The next scan's first pulse starts the run.
         assert_eq!(run.input(Input::Trigger, 20.0), InputUse::Normal);
         assert_eq!((run.phase, run.t0), (Phase::Running, Some(20.0)));
+    }
+
+    #[test]
+    fn a_scan_started_soon_after_launch_is_not_ignored() {
+        let e = experiment();
+        let tl = compile(&e, 1, HZ).unwrap();
+        let mut run = Run::new(&e, tl, HZ, 3);
+        run.ready(0.0);
+        // The operator starts the scan right away: first pulse 3 s after
+        // Onset got ready, well inside the 5 s scanner-stopped rule.
+        assert_eq!(run.input(Input::Trigger, 3.0), InputUse::Normal);
+        assert_eq!((run.phase, run.t0, run.ignored_triggers), (Phase::Running, Some(3.0), 0));
     }
 
     #[test]
