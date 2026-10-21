@@ -40,7 +40,7 @@ style = "monochrome"
 
 | key | default | |
 |---|---|---|
-| `style` | `"monochrome"` | White on black: the name large, spec-sheet labels, a hairline rule, and a slowly turning point-cloud brain whose cortex flickers with slow, drifting activity. The brain is the real cortical surface of the MNI ICBM152 template |
+| `style` | `"monochrome"` | White on black: the name large, spec-sheet labels, a hairline rule, and a brain seen from the side as a matrix of dots that flicker with slow, drifting activity. The brain is the real cortex of the MNI ICBM152 template |
 | `title` | `[experiment] name` | Study title |
 | `greeting` | `"Welcome"` | Small label above the participant's name |
 | `color` | `"white"` | Color of all text on these screens, including the instructions |

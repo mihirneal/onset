@@ -225,8 +225,8 @@ fn welcome_screen_renders_offscreen() {
         (0..100).flat_map(|y| (0..100).map(move |x| (x, y))).map(|(x, y)| lum(&run, x, y)).sum();
     assert_eq!(corner, 0.0, "nothing of the welcome screen may remain after t0");
     // The brain's dots on the right of the waiting screen.
-    let brain = (1380..1460).flat_map(|x| (500..580).map(move |y| (x, y)));
-    assert!(brain.map(|(x, y)| lum(&w, x, y)).fold(0.0, f32::max) > 0.1, "no brain");
+    let brain = (1150..1700).flat_map(|x| (350..750).map(move |y| (x, y)));
+    assert!(brain.map(|(x, y)| lum(&w, x, y)).fold(0.0, f32::max) > 0.3, "no brain");
     // The (white) logo top left, "POWERED BY ONSET" bottom right.
     for img in [&a, &w] {
         let logo = (144..244).flat_map(|x| (65..157).map(move |y| (x, y)));

@@ -1,9 +1,9 @@
 // The welcome screen ("monochrome" style), white on black, drawn only on the
-// screens before t = 0. Two passes share these uniforms: a full-screen
+// screens before t = 0. Two draws share these uniforms: a full-screen
 // triangle for the hairline rule and the standby dot (`vs_main`/`fs_main`),
-// and a slowly turning point-cloud brain, one small quad per surface point
-// from `brain.rs` (`vs_brain`/`fs_brain`). Pixel coordinates are physical
-// pixels from the top-left corner.
+// and the brain, one small quad per dot of `brain.rs`'s side view
+// (`vs_brain`/`fs_brain`). Pixel coordinates are physical pixels from the
+// top-left corner.
 
 struct Welcome {
     size: vec2<f32>,
@@ -71,46 +71,28 @@ struct BrainOut {
     @location(2) @interpolate(flat) radius: f32,
 };
 
-// One surface point of the brain (`at`: position and a 0-1 seed; `normal`:
-// the outward normal and the point's relief, 1 on a gyral crown, 0 in a
-// sulcus). It turns slowly about the vertical axis, seen from a little
-// above, in perspective. Crowns are bright and sulci dark, so the folds show;
-// the outline glows where the surface turns away; the far side is faint; and
-// the cortex flickers: random spikes, more of them inside a slow wave that
-// drifts from front to back.
+// One dot of the brain's side view (`dot`: position, a 0-1 seed, and the
+// relief there, 1 over a gyral crown, 0 over a sulcus). Dots over crowns are
+// brighter and bigger, so the folds show, and the cortex flickers: random
+// spikes, more of them inside a slow wave that drifts from front to back.
 @vertex
-fn vs_brain(@builtin(vertex_index) vi: u32, @location(0) at: vec4<f32>, @location(1) normal: vec4<f32>) -> BrainOut {
+fn vs_brain(@builtin(vertex_index) vi: u32, @location(0) dot: vec4<f32>) -> BrainOut {
     let t = u.time;
-    let yaw = 0.7 + t * 0.11;
-    let cy = cos(yaw);
-    let sy = sin(yaw);
-    let cp = cos(0.3);
-    let sp = sin(0.3);
-    let turn = vec3<f32>(cy * at.x + sy * at.z, at.y, -sy * at.x + cy * at.z);
-    let p = vec3<f32>(turn.x, cp * turn.y - sp * turn.z, sp * turn.y + cp * turn.z);
-    let nt = vec3<f32>(cy * normal.x + sy * normal.z, normal.y, -sy * normal.x + cy * normal.z);
-    let n = vec3<f32>(nt.x, cp * nt.y - sp * nt.z, sp * nt.y + cp * nt.z);
-    let screen = u.brain.xy + vec2<f32>(p.x, -p.y) * u.brain.z * (4.0 / (4.0 - p.z));
-
-    let rim = 1.0 - abs(n.z);
-    let near = clamp(0.5 + 0.5 * p.z, 0.0, 1.0);
-    let wave = smoothstep(0.7, 1.0, 0.5 + 0.5 * sin(at.z * 3.0 + at.y * 1.5 + t * 0.9));
-    let k = t * 0.55 + at.w * 17.0;
-    let fire = step(hashu(u32(at.w * 1.0e6) ^ (u32(floor(k)) * 0x9e3779b9u)), 0.04 + 0.2 * wave);
+    let screen = u.brain.xy + vec2<f32>(dot.x, -dot.y) * u.brain.z;
+    let relief = dot.w * dot.w;
+    let wave = smoothstep(0.7, 1.0, 0.5 + 0.5 * sin(dot.x * 3.0 - dot.y * 1.5 + t * 0.9));
+    let k = t * 0.55 + dot.z * 17.0;
+    let fire = step(hashu(u32(dot.z * 1.0e6) ^ (u32(floor(k)) * 0x9e3779b9u)), 0.03 + 0.15 * wave);
     let spike = fire * exp(-fract(k) * 6.0);
-    let relief = normal.w * normal.w * normal.w;
-    // Points on the far side, facing away, are faint, so it reads as a solid surface.
-    let front = mix(0.1, 1.0, smoothstep(-0.25, 0.2, n.z));
-    let level = (0.012 + 0.5 * relief + 0.24 * rim * rim * (0.3 + 0.7 * relief) + 0.08 * wave)
-        * mix(0.35, 1.0, near) * front + 0.75 * spike * front;
-    let radius = (0.7 + 0.35 * near + 0.8 * spike) * u.scale;
+    let level = 0.08 + 0.55 * relief + 0.10 * wave + 0.6 * spike;
+    let radius = (1.0 + 0.5 * relief + 0.6 * spike) * u.scale;
 
     let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
     let at_px = screen + corner * (radius + 1.0);
     var out: BrainOut;
     out.pos = vec4<f32>(at_px.x / u.size.x * 2.0 - 1.0, 1.0 - at_px.y / u.size.y * 2.0, 0.0, 1.0);
     out.local = corner * (radius + 1.0);
-    out.level = level * u.brain.w;
+    out.level = min(level, 1.0) * u.brain.w;
     out.radius = radius;
     return out;
 }

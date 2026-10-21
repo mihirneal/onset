@@ -126,4 +126,4 @@ v0.1, under active development. macOS only (by design). Not yet supported: audio
 
 ## License
 
-MIT OR Apache-2.0. The welcome screen bundles Space Grotesk and Space Mono (SIL Open Font License, `src/fonts`) and a brain surface made from the MNI ICBM152 2009c template (© McConnell Brain Imaging Centre, Montreal Neurological Institute, McGill University; notice in `src/brain/LICENSE-MNI152.txt`).
+MIT OR Apache-2.0. The welcome screen bundles Space Grotesk and Space Mono (SIL Open Font License, `src/fonts`) and a brain outline made from the MNI ICBM152 2009c template (© McConnell Brain Imaging Centre, Montreal Neurological Institute, McGill University; notice in `src/brain/LICENSE-MNI152.txt`).

@@ -1,36 +1,32 @@
-//! The welcome screen's brain: points on the cortical surface of a real
-//! brain, drawn as a slowly turning point cloud (`shaders/welcome.wgsl`).
+//! The welcome screen's brain: a real brain seen from its left side, the
+//! front facing left, as a matrix of dots (`shaders/welcome.wgsl`).
 //!
-//! The points come from the MNI ICBM152 2009c nonlinear asymmetric template
-//! (the standard fMRI template; McConnell Brain Imaging Centre, Montreal
-//! Neurological Institute; notice in `brain/LICENSE-MNI152.txt`), via
-//! TemplateFlow's 1 mm gray- and white-matter probability maps. The surface
-//! is where gray + white matter crosses 0.5, reached from outside the brain,
-//! so it runs down into the sulci. Each point has its outward normal and a
-//! relief value, 1 on a gyral crown and 0 deep in a sulcus. The generator is
-//! the ignored test `build_points_from_mni152` below.
-//!
-//! Units are about half the brain's front-to-back length; x is left to right,
-//! y up, z toward the front.
+//! The shape is the cortical surface of the MNI ICBM152 2009c nonlinear
+//! asymmetric template (the standard fMRI template; McConnell Brain Imaging
+//! Centre, Montreal Neurological Institute; notice in
+//! `brain/LICENSE-MNI152.txt`), from TemplateFlow's 1 mm gray- and
+//! white-matter probability maps. One dot sits on each cell of a regular grid
+//! inside the brain's outline, shaded by the relief of the cortex nearest the
+//! viewer there: 1 over gyral crowns, 0 over sulci. The generator is the
+//! ignored test `build_side_dots_from_mni152` below.
 
-/// Records of 10 bytes: x, y, z as i16 (units × 16000), the normal as 3 × i8
-/// (× 127), and the relief as u8 (× 255).
-const POINTS: &[u8] = include_bytes!("brain/mni152_points.bin");
-const RECORD: usize = 10;
-const POSITION_SCALE: f32 = 16000.0;
+/// Grid spacing, in units of half the brain's front-to-back length.
+pub const SPACING: f32 = 0.038;
 
-/// Every surface point: `[x, y, z, seed, nx, ny, nz, relief]`. `seed` (0-1)
-/// varies each point's activity.
-pub fn surface_points() -> Vec<[f32; 8]> {
-    POINTS
-        .chunks_exact(RECORD)
+/// Records of 3 bytes: the grid column and row as i8 (column 0 at the
+/// middle, front = negative; row up), and the relief as u8 (× 255).
+const DOTS: &[u8] = include_bytes!("brain/side_dots.bin");
+
+/// Every dot: `[x, y, seed, relief]`, with x and y in units of half the
+/// brain's length (front = negative x, up = positive y) and `seed` (0-1)
+/// varying each dot's activity.
+pub fn side_dots() -> Vec<[f32; 4]> {
+    DOTS.chunks_exact(3)
         .enumerate()
         .map(|(i, r)| {
-            let c = |k: usize| i16::from_le_bytes([r[2 * k], r[2 * k + 1]]) as f32 / POSITION_SCALE;
-            let n = |k: usize| r[6 + k] as i8 as f32 / 127.0;
             let seed = (i as u32).wrapping_mul(0x9e37_79b9).rotate_left(13).wrapping_mul(0x85eb_ca6b) as f32
                 / u32::MAX as f32;
-            [c(0), c(1), c(2), seed, n(0), n(1), n(2), r[9] as f32 / 255.0]
+            [r[0] as i8 as f32 * SPACING, r[1] as i8 as f32 * SPACING, seed, r[2] as f32 / 255.0]
         })
         .collect()
 }
@@ -40,34 +36,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn points_are_a_brain_sized_surface() {
-        let points = surface_points();
-        assert!(points.len() >= 40_000, "{}", points.len());
-        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-        for p in &points {
-            for k in 0..3 {
-                lo[k] = lo[k].min(p[k]);
-                hi[k] = hi[k].max(p[k]);
+    fn dots_fill_a_brain_shaped_outline() {
+        let dots = side_dots();
+        assert!((1000..4000).contains(&dots.len()), "{}", dots.len());
+        let (mut lo, mut hi) = ([f32::MAX; 2], [f32::MIN; 2]);
+        for d in &dots {
+            for k in 0..2 {
+                lo[k] = lo[k].min(d[k]);
+                hi[k] = hi[k].max(d[k]);
             }
-            let n = (p[4] * p[4] + p[5] * p[5] + p[6] * p[6]).sqrt();
-            assert!((n - 1.0).abs() < 0.03, "normal length {n}");
-            assert!((0.0..=1.0).contains(&p[3]) && (0.0..=1.0).contains(&p[7]));
+            assert!((0.0..=1.0).contains(&d[2]) && (0.0..=1.0).contains(&d[3]));
         }
-        // Longest front to back, narrower side to side, both hemispheres, centered.
-        let size = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-        assert!((1.9..2.1).contains(&size[2]), "length {size:?}");
-        assert!(size[0] < 0.9 * size[2] && size[1] < 0.9 * size[2], "{size:?}");
-        assert!(lo[0] < -0.6 && hi[0] > 0.6, "{lo:?} {hi:?}");
-        assert!((lo[2] + hi[2]).abs() < 0.05, "centered front to back");
+        // About two units front to back (centered), less from top to bottom.
+        let size = [hi[0] - lo[0], hi[1] - lo[1]];
+        assert!((1.85..2.05).contains(&size[0]) && (lo[0] + hi[0]).abs() < 0.1, "{lo:?} {hi:?}");
+        assert!((1.2..1.9).contains(&size[1]), "{size:?}");
+        // Crowns and sulci both show.
+        assert!(dots.iter().any(|d| d[3] > 0.9) && dots.iter().any(|d| d[3] < 0.1));
     }
 
-    /// Rebuild `brain/mni152_points.bin` from TemplateFlow's
+    /// Rebuild `brain/side_dots.bin` from TemplateFlow's
     /// `tpl-MNI152NLin2009cAsym_res-01_label-{GM,WM}_probseg.nii` (gunzipped)
     /// in `$ONSET_MNI152_DIR`:
-    /// `ONSET_MNI152_DIR=... cargo test --lib build_points_from_mni152 -- --ignored`
+    /// `ONSET_MNI152_DIR=... cargo test --lib build_side_dots_from_mni152 -- --ignored`
     #[test]
     #[ignore]
-    fn build_points_from_mni152() {
+    fn build_side_dots_from_mni152() {
         let dir = std::path::PathBuf::from(std::env::var("ONSET_MNI152_DIR").expect("set ONSET_MNI152_DIR"));
         let name =
             |tissue: &str| dir.join(format!("tpl-MNI152NLin2009cAsym_res-01_label-{tissue}_probseg.nii"));
@@ -106,9 +100,12 @@ mod tests {
             }
         }
 
-        // Surface samples: where a brain voxel meets an outside voxel, the
-        // point between them where tissue crosses 0.5.
-        let mut samples = Vec::new();
+        // The cortical surface: where a brain voxel meets an outside voxel,
+        // the point between them where tissue crosses 0.5. Relief: how
+        // buried each point is, from tissue blurred over a few mm (more
+        // tissue around means deeper in a sulcus).
+        let blurred = blur(&tissue, dims, 2);
+        let mut surface = Vec::new();
         for z in 1..nz - 1 {
             for y in 1..ny - 1 {
                 for x in 1..nx - 1 {
@@ -121,46 +118,25 @@ mod tests {
                             ((x as i64 + dx) as usize, (y as i64 + dy) as usize, (z as i64 + dz) as usize);
                         if outside[at(u, v, w)] {
                             let f = (t - 0.5) / (t - tissue[at(u, v, w)]).max(1e-6);
-                            samples.push([
+                            let p = [
                                 x as f32 + dx as f32 * f,
                                 y as f32 + dy as f32 * f,
                                 z as f32 + dz as f32 * f,
-                            ]);
+                            ];
+                            surface.push((p, sample(&blurred, dims, p)));
                         }
                     }
                 }
             }
         }
-        // Relief: how buried a point is, from tissue blurred over a few mm
-        // (more tissue around it means deeper in a sulcus).
-        let blurred = blur(&tissue, dims, 2);
-        let mut depth: Vec<f32> = samples.iter().map(|p| sample(&blurred, dims, *p)).collect();
-        let mut sorted = depth.clone();
-        sorted.sort_by(f32::total_cmp);
-        let (lo, hi) = (sorted[sorted.len() / 20], sorted[sorted.len() * 19 / 20]);
-        for d in &mut depth {
-            *d = 1.0 - ((*d - lo) / (hi - lo)).clamp(0.0, 1.0);
-        }
-        // Keep 50,000, more of them on the crowns than down in the sulci,
-        // so the folds show in the density too.
-        let mut rng = crate::rng::Rng::new(152);
-        let mut order: Vec<usize> = (0..samples.len()).collect();
-        rng.shuffle(&mut order);
-        let keep: Vec<usize> = order
-            .into_iter()
-            .filter(|&i| (rng.unit() as f32) < 0.12 + 0.88 * depth[i] * depth[i])
-            .take(50_000)
-            .collect();
-        let samples: Vec<[f32; 3]> = keep.iter().map(|&i| samples[i]).collect();
-        let depth: Vec<f32> = keep.iter().map(|&i| depth[i]).collect();
 
-        // Voxel -> MNI mm (x right, y front, z up) -> ours (x right, y up,
-        // z front), centered, half the front-to-back length = 1.
+        // Voxel -> MNI mm (x right, y front, z up), centered, scaled so half
+        // the front-to-back length is 1.
         let mm = |p: [f32; 3]| {
             let r = |row: [f32; 4]| row[0] * p[0] + row[1] * p[1] + row[2] * p[2] + row[3];
-            [r(srow[0]), r(srow[2]), r(srow[1])]
+            [r(srow[0]), r(srow[1]), r(srow[2])]
         };
-        let world: Vec<[f32; 3]> = samples.iter().map(|p| mm(*p)).collect();
+        let world: Vec<[f32; 3]> = surface.iter().map(|(p, _)| mm(*p)).collect();
         let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
         for p in &world {
             for k in 0..3 {
@@ -169,31 +145,37 @@ mod tests {
             }
         }
         let center = [(lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0, (lo[2] + hi[2]) / 2.0];
-        let half = (hi[2] - lo[2]) / 2.0;
+        let half = (hi[1] - lo[1]) / 2.0;
 
-        let mut out = Vec::with_capacity(samples.len() * RECORD);
-        for ((p, w), relief) in samples.iter().zip(&world).zip(&depth) {
-            // Outward normal: down the tissue gradient (voxel axes are MNI axes).
-            let g = gradient(&tissue, dims, *p);
-            let g = [-g[0], -g[2], -g[1]];
-            let l = (g[0] * g[0] + g[1] * g[1] + g[2] * g[2]).sqrt().max(1e-6);
-            for k in 0..3 {
-                let v = (w[k] - center[k]) / half;
-                out.extend_from_slice(&((v * POSITION_SCALE).round() as i16).to_le_bytes());
-            }
-            for c in g {
-                out.push(((c / l) * 127.0).round() as i8 as u8);
-            }
-            out.push((relief * 255.0).round() as u8);
+        // Seen from the left: bin by (front to the left, up); in each cell,
+        // average the relief of the surface nearest the viewer (smallest x).
+        let mut cells: std::collections::BTreeMap<(i32, i32), Vec<[f32; 2]>> = Default::default();
+        for (w, (_, buried)) in world.iter().zip(&surface) {
+            let n = [(w[0] - center[0]) / half, (w[1] - center[1]) / half, (w[2] - center[2]) / half];
+            let key = ((-n[1] / SPACING).round() as i32, (n[2] / SPACING).round() as i32);
+            cells.entry(key).or_default().push([n[0], *buried]);
         }
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/brain/mni152_points.bin");
+        let mut dots: Vec<(i32, i32, f32)> = cells
+            .into_iter()
+            .map(|(key, pts)| {
+                let near = pts.iter().map(|p| p[0]).fold(f32::MAX, f32::min);
+                let front: Vec<f32> = pts.iter().filter(|p| p[0] <= near + 0.05).map(|p| p[1]).collect();
+                (key.0, key.1, front.iter().sum::<f32>() / front.len() as f32)
+            })
+            .collect();
+        // Less buried = higher relief, stretched so the folds still show
+        // although a cell averages crowns and sulci.
+        let mut sorted: Vec<f32> = dots.iter().map(|d| d.2).collect();
+        sorted.sort_by(f32::total_cmp);
+        let (lo, hi) = (sorted[sorted.len() / 10], sorted[sorted.len() * 9 / 10]);
+        let mut out = Vec::with_capacity(dots.len() * 3);
+        for (cx, cy, buried) in &mut dots {
+            let relief = 1.0 - ((*buried - lo) / (hi - lo)).clamp(0.0, 1.0);
+            out.extend([*cx as i8 as u8, *cy as i8 as u8, (relief * 255.0).round() as u8]);
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/brain/side_dots.bin");
         std::fs::write(&path, out).unwrap();
-        println!(
-            "{} points, {:?} mm, -> {}",
-            samples.len(),
-            [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]],
-            path.display()
-        );
+        println!("{} dots from {} surface points -> {}", dots.len(), surface.len(), path.display());
     }
 
     const STEPS: [(i64, i64, i64); 6] = [(1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)];
@@ -254,15 +236,5 @@ mod tests {
             )
         };
         lerp(plane(z0), plane(z0 + 1), fz)
-    }
-
-    fn gradient(v: &[f32], dims: [usize; 3], p: [f32; 3]) -> [f32; 3] {
-        let d = |k: usize| {
-            let (mut a, mut b) = (p, p);
-            a[k] += 0.7;
-            b[k] -= 0.7;
-            (sample(v, dims, a) - sample(v, dims, b)) / 1.4
-        };
-        [d(0), d(1), d(2)]
     }
 }

@@ -130,7 +130,7 @@ pub struct Renderer {
     welcome_buf: wgpu::Buffer,
     welcome_bind: wgpu::BindGroup,
     brain_pipeline: wgpu::RenderPipeline,
-    /// The brain's surface points, made the first time a welcome screen is drawn.
+    /// The brain's dots, uploaded the first time a welcome screen is drawn.
     brain_points: Option<(wgpu::Buffer, u32)>,
 
     font_system: FontSystem,
@@ -448,8 +448,8 @@ impl Renderer {
             cache: None,
             multiview_mask: None,
         });
-        // The welcome brain: one quad per surface point, light added up.
-        let brain_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        // The welcome brain: one quad per dot, light added up.
+        let brain_attrs = wgpu::vertex_attr_array![0 => Float32x4];
         let additive = wgpu::BlendState {
             color: wgpu::BlendComponent {
                 src_factor: wgpu::BlendFactor::One,
@@ -465,7 +465,7 @@ impl Renderer {
                 module: &welcome_shader,
                 entry_point: Some("vs_brain"),
                 buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 32,
+                    array_stride: 16,
                     step_mode: wgpu::VertexStepMode::Instance,
                     attributes: &brain_attrs,
                 })],
@@ -1175,22 +1175,20 @@ impl Renderer {
         (WelcomeUniforms { size: [w, h], time: wl.time, scale: s, brain, rule, dot }, logo)
     }
 
-    /// Make the brain's surface points and upload them, once.
+    /// Upload the brain's dots, once.
     fn ensure_brain(&mut self) {
         if self.brain_points.is_some() {
             return;
         }
-        // The same for every renderer, so make them once per process.
-        static POINTS: std::sync::OnceLock<Vec<[f32; 8]>> = std::sync::OnceLock::new();
-        let points = POINTS.get_or_init(brain::surface_points);
+        let dots = brain::side_dots();
         let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("welcome brain"),
-            size: std::mem::size_of_val(points.as_slice()) as u64,
+            size: std::mem::size_of_val(dots.as_slice()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(points));
-        self.brain_points = Some((buffer, points.len() as u32));
+        self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&dots));
+        self.brain_points = Some((buffer, dots.len() as u32));
     }
 
     /// `text` in a light weight at `px`, or smaller until it fits on one
