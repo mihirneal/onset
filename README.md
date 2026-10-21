@@ -66,6 +66,8 @@ Set `ONSET_SNAPSHOTS=some/folder` to save a PNG of every event's first frame. Th
 
    Add `--name "First Last"` to show the participant's name on the welcome screen (experiments with a `[welcome]` table, like the examples). The name is only shown, never saved. The run number is chosen automatically: Onset picks the next run without data, and never overwrites a run unless you pass `--force`. The terminal shows a live status line: elapsed time, TR count, trial, dropped frames, and the last response.
 
+   The run follows the scanner at both ends. If the scan is still going when the stimulus ends, Onset holds the final screen until the pulses stop (Esc stops waiting), and it warns if the scan stopped before the stimulus did. Pulses that are already arriving when Onset gets ready (the end of an earlier scan) are ignored rather than starting the run; Onset says so and waits for that scan to stop.
+
 ## Output
 
 ```
@@ -75,7 +77,7 @@ data/sub-07/ses-1/
 │   └── sub-07_ses-1_task-flanker_run-01_events.json   column descriptions
 └── onset/
     ├── …_eventlog.tsv     every event: planned vs measured onset, delay, frames, response, RT
-    ├── …_frames.tsv       every frame: time, interval, missed refreshes, photodiode state
+    ├── …_frames.tsv       every frame: time, when it was on screen, missed refreshes, photodiode state
     ├── …_inputs.tsv       every trigger and key/button press with timestamps
     ├── …_run.json         provenance: versions, GPU, display Hz, seed, start/end, summary
     └── …_experiment.toml, …_rig.toml, …_schedule.tsv   exact copies of the inputs
@@ -118,7 +120,7 @@ onset_column = "onset"      # absolute onsets, e.g. from optseq2
 
 ## How timing works
 
-See [docs/TIMING.md](docs/TIMING.md). In short, rendering uses vsync with one frame in flight, so asking for the next frame blocks until the previous one reaches the screen. That moment is timestamped and becomes the measured onset. Each frame shows the event whose planned onset is nearest that frame's flip. The photodiode rig ([hardware/](hardware/)) measures the remaining display or projector lag.
+See [docs/TIMING.md](docs/TIMING.md). In short, rendering uses vsync, and Onset presents each frame through Metal itself so the display reports when that frame was really on screen. Those reports become the measured onsets, and a frame planner uses them to predict which refresh each new frame lands on, so CPU jitter can't skip frames or log drops that didn't happen. Each frame shows the event whose planned onset is nearest that frame's flip. The photodiode rig ([hardware/](hardware/)) measures the remaining display or projector lag.
 
 ## Status
 

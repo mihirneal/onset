@@ -141,6 +141,11 @@ impl Status {
                     acc
                 )
             }
+            Phase::Holding => format!(
+                "{} stimulus finished · holding the final screen until the scanner stops · TR {} · Esc stops waiting",
+                green("■"),
+                s.triggers
+            ),
             Phase::Done(_) => String::new(),
         };
         let _ = self.tx.send(Msg::Line(line));

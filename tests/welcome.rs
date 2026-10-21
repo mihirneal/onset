@@ -65,6 +65,7 @@ fn input(run: &mut Run, log: &Sender<LogMsg>, input: Input, time: f64, kind: &'s
 fn participant_name_is_shown_but_never_written() {
     let exp = example("flanker");
     let tl = schedule::compile(&exp, 1, HZ).unwrap();
+    let run_length = tl.end;
     let out = Path::new(env!("CARGO_TARGET_TMPDIR")).join("welcome-name");
     let _ = std::fs::remove_dir_all(&out);
     let paths = Paths::new(&out, "99", None, &exp.experiment.task, 1);
@@ -82,10 +83,13 @@ fn participant_name_is_shown_but_never_written() {
     let mut frame = 0;
     while !run.is_done() {
         let t = frame as f64 / HZ;
+        assert!(t < run_length + 60.0, "the run never ended");
         if frame == 60 {
             input(&mut run, &log, Input::Continue, t, "operator", "continue");
         }
-        if t >= next_trigger {
+        // The scan covers the run and then stops, so the run can end.
+        let scanning = run.t0.is_none_or(|t0| next_trigger <= t0 + run_length);
+        if scanning && t >= next_trigger {
             input(&mut run, &log, Input::Trigger, next_trigger, "trigger", "t");
             next_trigger += 2.0;
         }
@@ -97,7 +101,7 @@ fn participant_name_is_shown_but_never_written() {
             false
         });
 
-        let plan = run.frame(frame, t);
+        let plan = run.frame(frame, t, None);
         if shown_name(plan.scene).as_deref() == Some(NAME) {
             greeted += 1;
         }
@@ -154,7 +158,7 @@ fn screens(exp: &Experiment, name: Option<&str>) -> [Scene; 4] {
     }
     let mut frame = 0;
     let mut next = |run: &mut Run| {
-        let scene = run.frame(frame, frame as f64 / HZ).scene.clone();
+        let scene = run.frame(frame, frame as f64 / HZ, None).scene.clone();
         frame += 1;
         scene
     };

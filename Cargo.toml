@@ -26,5 +26,32 @@ wgpu = "30.0.1"
 winit = "0.30.13"
 hidapi = "2.6.7"
 
+# Our own present step (src/present.rs), for Metal's report of when each
+# frame reached the screen. These MUST be the versions wgpu 30's Metal
+# backend (wgpu-hal 30.0.1) uses: objc2 0.6, block2 0.6, objc2-metal and
+# objc2-quartz-core 0.3. Otherwise the CAMetalLayer and MTLCommandQueue that
+# wgpu hands us are different types from the ones we name.
+block2 = "0.6.2"
+objc2-metal = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "block2",                # addPresentedHandler
+    "objc2-core-foundation", # presentedTime (wgpu doesn't turn this one on)
+    "MTLAllocation",
+    "MTLCommandBuffer",
+    "MTLCommandQueue",
+    "MTLDevice",
+    "MTLDrawable",
+    "MTLResource",
+    "MTLTexture",
+] }
+objc2-quartz-core = { version = "0.3.2", default-features = false, features = [
+    "std",
+    "objc2-core-foundation", # CACurrentMediaTime
+    "objc2-metal",           # nextDrawable, CAMetalDrawable
+    "CABase",
+    "CALayer",
+    "CAMetalLayer",
+] }
+
 [profile.release]
 debug = 1

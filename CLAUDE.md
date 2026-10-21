@@ -21,9 +21,12 @@ This repo is public, general software. Site details, session logs, checklists, s
 |---|---|
 | `src/experiment.rs`, `src/rig.rs` | TOML formats: experiment (portable) and rig (display, trigger, buttons, photodiode) |
 | `src/schedule.rs` | Compiles an experiment + schedule TSV into absolute planned onsets; validation |
-| `src/run.rs` | The run state machine: picks what each frame shows, handles triggers/responses, produces records. No GPU code, unit-tested with synthetic frame times |
+| `src/run.rs` | The run state machine: picks what each frame shows, handles triggers/responses, follows the scanner at both ends, produces records. No GPU code, unit-tested with synthetic frame times and display reports |
 | `src/brain.rs`, `src/brain/` | The welcome screen's brain: a dot-matrix side view of the MNI ICBM152 template |
 | `src/render.rs`, `src/shaders/` | wgpu renderer: shapes, circles, radial checkerboard, images, text (glyphon), photodiode patch, welcome screen, offscreen snapshots (also headless, no window) |
+| `src/present.rs`, `src/hostclock.rs` | Presenting each frame through Metal ourselves, so the display reports when it was on screen (`presentedTime`); converting that host time to `Instant` |
+| `src/planner.rs` | Predicts which refresh each frame lands on from those reports, and fits the refresh period. Tested against a simulated display in `tests/planner_sim.rs` |
+| `src/scanner.rs` | `PulseWatch`: has the scanner stopped (no pulse for max(5 s, 2.5 TR))? |
 | `src/output.rs` | Writer thread: BIDS events.tsv/json, raw frames/inputs/eventlog TSVs, run.json |
 | `src/input.rs`, `src/keyfilter.rs` | Input threads (USB HID trigger boxes, serial, simulated scanner), every input timestamped on arrival; filtering a shared USB trigger box's keystrokes out of other apps |
 | `src/main.rs`, `src/console.rs`, `src/macos.rs` | CLI, window and frame loop, operator status line, macOS priority and window placement |
@@ -43,9 +46,10 @@ This repo is public, general software. Site details, session logs, checklists, s
 
 ## Design decisions
 
-- **Rendering:** winit + wgpu, Fifo vsync with one frame in flight. The flip time of frame k is taken as the moment frame k+1 is acquired. Every frame and any dropped frames are logged.
+- **Rendering:** winit + wgpu, Fifo vsync with one frame in flight. Frames are presented through our own Metal command buffer, and Metal's `presentedTime` for each frame is its measured flip; the planner predicts each new frame's flip from those, so CPU jitter in when frame buffers come back can't skip frames or log false drops. Drops are counted from gaps between presented times. Without Metal, a frame's flip is taken as the moment the next one is acquired. Every frame and any dropped frames are logged (`docs/TIMING.md`).
 - **Scheduling:** onsets are absolute times after the first kept trigger (`dummy_volumes` are skipped), snapped to the nearest refresh. Durations are never added up at runtime.
 - **Scanner sync:** a USB keyboard-style trigger box read directly (`source = "hid"`: works whatever window has focus, timestamped on arrival on its own thread, opened exclusively so its keys don't leak into other apps; macOS Input Monitoring permission once), the focused window's keyboard (`"keyboard"`; Onset warns loudly if it loses focus), a serial trigger box, or a simulated scanner. A fORP 932 types "t" in its BYGRT mode, "5" in 12345 mode. `onset inputs --rig <rig>` prints every trigger and press as it arrives.
+- **Run ends follow the scanner:** if pulses are still coming when the stimulus ends, hold the final screen until the scanner stops; warn if the scan stops first; before the first pulse, ignore the tail of a scan already under way when Onset got ready.
 - **Experiments** are TOML; trial lists are TSV files (`--schedule` swaps one in per run).
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
 - **Timing check (optional):** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock (`onset probe` records it, `onset check-timing` analyses it). The same check works for other presentation software on the same paradigm, for a like-for-like comparison. The analysis was ported from Python and reproduced its summaries on the same fixtures; keep its statistics and output names stable.
