@@ -40,7 +40,7 @@ This repo is public, general software. Site details, session logs, checklists, s
 ## Checks
 
 - `cargo test`, `cargo clippy -- -D warnings`, and `onset validate` on every example (`examples/nsd` ships without images or a schedule; a test validates it with one made from empty stand-in files). CI on GitHub runs the same on macOS.
-- End-to-end without hardware: `onset run <exp> --rig examples/rigs/dev.toml --simulate --robot --sub 99 --out <scratch dir>`. For a quick check, copy the experiment with the `instructions` removed and fewer volumes. `ONSET_SNAPSHOTS=<dir>` saves each event's first frame as a PNG; it disturbs timing, so use it only for checking visuals.
+- End-to-end without hardware: `onset run <exp> --rig examples/rigs/dev.toml --simulate --robot --windowed --sub 99 --out <scratch dir>`. For a quick check, copy the experiment with the `instructions` removed and fewer volumes. `ONSET_SNAPSHOTS=<dir>` saves each event's first frame as a PNG; it disturbs timing, so use it only for checking visuals.
 - Test runs open windows on the developer's screen. Keep them short, and ask before anything fullscreen.
 - Visual checks without a window: `ONSET_WELCOME_SNAPSHOTS=<dir> cargo test --test welcome` renders the welcome screens of every example offscreen (`Renderer::headless`) and saves PNGs.
 

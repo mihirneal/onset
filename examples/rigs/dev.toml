@@ -1,10 +1,6 @@
-# Your desk: a window on the main screen, keyboard trigger "5", keys 1-4 as buttons.
-# Add --simulate to `onset run` to get fake triggers instead of pressing 5.
-
-[display]
-fullscreen = false
-window_size = [1280, 800]
-hide_cursor = false
+# Your desk: fullscreen (on a second display if one is connected), keyboard
+# trigger "5", keys 1-4 as buttons. Add --simulate to `onset run` to get fake
+# triggers instead of pressing 5, or --windowed for a window instead.
 
 [trigger]
 source = "keyboard"
