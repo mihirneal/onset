@@ -201,16 +201,16 @@ fn welcome_screen_renders_offscreen() {
     let run = r.snapshot(&running, Some(false)).unwrap();
     assert!(a.as_raw() != b.as_raw(), "the background should move");
 
-    // Readable: around the instructions the background is dark and the text bright.
-    let mut center = Vec::new();
-    for y in (0.35 * 1080.0) as u32..(0.65 * 1080.0) as u32 {
-        for x in (0.3 * 1920.0) as u32..(0.7 * 1920.0) as u32 {
-            center.push(lum(&a, x, y));
+    // Readable: in the instructions' column the background is dark and the text bright.
+    let mut column = Vec::new();
+    for y in (0.38 * 1080.0) as u32..(0.85 * 1080.0) as u32 {
+        for x in (0.07 * 1920.0) as u32..(0.6 * 1920.0) as u32 {
+            column.push(lum(&a, x, y));
         }
     }
-    let (bg, text) = (percentile(center.clone(), 0.5), percentile(center, 0.995));
+    let (bg, text) = (percentile(column.clone(), 0.5), percentile(column, 0.999));
     assert!(bg < 0.06, "background behind the instructions is too bright: {bg}");
-    assert!(text > 0.9, "instruction text should be bright: {text}");
+    assert!(text > 0.8, "instruction text should be bright: {text}");
 
     // The photodiode patch is drawn over the welcome screen exactly as before.
     for img in [&a, &w] {

@@ -1093,12 +1093,12 @@ impl Renderer {
             });
             let label = self.shape("INSTRUCTIONS", label_px, mono, label_style);
             let header_h = greeting.h + hero.h + 0.055 * h;
-            // The instructions at `font_size`, but at most 4.4% of the screen
+            // The instructions at `font_size`, but at most 3.4% of the screen
             // height, made smaller until they fit; without the name if need be.
             let text_font = wl.text_font.as_deref().or(display);
             let style =
                 TextStyle { weight: Weight::NORMAL, spacing: 0.0, wrap: 0.58 * w, left: true, leading: 1.4 };
-            let size = (wl.text_size * s).min(0.044 * h);
+            let size = (wl.text_size * s).min(0.034 * h);
             let mut layout = None;
             'fit: for with_header in [true, false] {
                 for scale in [1.0, 0.9, 0.8, 0.7] {
@@ -1139,7 +1139,7 @@ impl Renderer {
             put(&mut out, &label, x0, y, tone(0.45));
             y += label.h + 0.012 * h;
             if let Some(body) = &body {
-                put(&mut out, body, x0, y, tone(0.92));
+                put(&mut out, body, x0, y, tone(0.86));
             }
             dot = [0.0; 4];
             brain = [0.8 * w, (y + bottom) / 2.0, 0.2 * h, 0.6];
