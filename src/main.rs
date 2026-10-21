@@ -1232,8 +1232,9 @@ impl App {
                     }
                 }
 
-                // Start the fake scanner once we're waiting for it.
-                if ar.run.phase == Phase::Waiting && !ar.simulator_started {
+                // Start the fake scanner once we're waiting for it (the run
+                // starts on its first pulse, from the instructions too).
+                if matches!(ar.run.phase, Phase::Instructions | Phase::Waiting) && !ar.simulator_started {
                     if let Some(tr) = ar.setup.simulate_tr {
                         ar.simulator_started = true;
                         input::spawn_simulated_scanner(
