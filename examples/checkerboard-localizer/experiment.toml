@@ -11,6 +11,13 @@ baseline = "fixation"
 instructions = "Keep your eyes on the cross in the middle.\n\nPress any button when the cross turns red."
 waiting_text = "The scan is about to start…"
 
+# Animated welcome screen behind the instructions and the wait for the
+# scanner, with the experiment name as the title. `onset run --name "First Last"`
+# puts the participant's name in front (shown only, never saved). The rig's
+# [site] logo goes in the corner. Gone from the first trigger.
+[welcome]
+style = "monochrome"
+
 [scanner]
 tr = 2.0
 dummy_volumes = 0

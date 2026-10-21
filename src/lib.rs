@@ -4,6 +4,7 @@
 //! (hardware threads) is plain logic that's tested without a screen or a
 //! scanner. `main.rs` adds the window, frame loop and command line.
 
+pub mod brain;
 pub mod check_timing;
 pub mod color;
 pub mod experiment;

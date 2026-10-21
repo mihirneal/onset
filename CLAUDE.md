@@ -22,7 +22,8 @@ This repo is public, general software. Site details, session logs, checklists, s
 | `src/experiment.rs`, `src/rig.rs` | TOML formats: experiment (portable) and rig (display, trigger, buttons, photodiode) |
 | `src/schedule.rs` | Compiles an experiment + schedule TSV into absolute planned onsets; validation |
 | `src/run.rs` | The run state machine: picks what each frame shows, handles triggers/responses, follows the scanner at both ends, produces records. No GPU code, unit-tested with synthetic frame times and display reports |
-| `src/render.rs`, `src/shaders/` | wgpu renderer: shapes, circles, radial checkerboard, images, text (glyphon), photodiode patch, offscreen snapshots |
+| `src/brain.rs`, `src/brain/` | The welcome screen's brain: a dot-matrix side view of the MNI ICBM152 template |
+| `src/render.rs`, `src/shaders/` | wgpu renderer: shapes, circles, radial checkerboard, images, text (glyphon), photodiode patch, welcome screen, offscreen snapshots (also headless, no window) |
 | `src/present.rs`, `src/hostclock.rs` | Presenting each frame through Metal ourselves, so the display reports when it was on screen (`presentedTime`); converting that host time to `Instant` |
 | `src/planner.rs` | Predicts which refresh each frame lands on from those reports, and fits the refresh period. Tested against a simulated display in `tests/planner_sim.rs` |
 | `src/scanner.rs` | `PulseWatch`: has the scanner stopped (no pulse for max(5 s, 2.5 TR))? |
@@ -41,6 +42,7 @@ This repo is public, general software. Site details, session logs, checklists, s
 - `cargo test`, `cargo clippy -- -D warnings`, and `onset validate` on every example. CI on GitHub runs the same on macOS.
 - End-to-end without hardware: `onset run <exp> --rig examples/rigs/dev.toml --simulate --robot --sub 99 --out <scratch dir>`. For a quick check, copy the experiment with the `instructions` removed and fewer volumes. `ONSET_SNAPSHOTS=<dir>` saves each event's first frame as a PNG; it disturbs timing, so use it only for checking visuals.
 - Test runs open windows on the developer's screen. Keep them short, and ask before anything fullscreen.
+- Visual checks without a window: `ONSET_WELCOME_SNAPSHOTS=<dir> cargo test --test welcome` renders the welcome screens of every example offscreen (`Renderer::headless`) and saves PNGs.
 
 ## Design decisions
 
@@ -52,6 +54,7 @@ This repo is public, general software. Site details, session logs, checklists, s
 - **Output:** BIDS `events.tsv` with measured onsets, plus raw logs streamed from a background thread so crashes keep data.
 - **Timing check (optional):** photodiode on the corner patch, with an Arduino timestamping the photodiode and the trigger on one clock (`onset probe` records it, `onset check-timing` analyses it). The same check works for other presentation software on the same paradigm, for a like-for-like comparison. The analysis was ported from Python and reproduced its summaries on the same fixtures; keep its statistics and output names stable.
 - **Schedules from images:** `onset make-schedule` draws with `rng::PyRandom`, a Mersenne Twister that matches Python's `random.Random`, so a `--seed`/`--run` gives the same schedule the old Python script made (`examples/nsd/schedule.tsv` is seed 1, run 1, and a test pins it). Run-time shuffling uses the separate `rng::Rng`.
+- **Welcome screen:** an optional `[welcome]` table gives the screens before t0 an animated, white-on-black look: the participant's name large (`onset run --name`), spec-sheet labels, and a dot-matrix side view of a real brain, the MNI ICBM152 template (`src/brain.rs`; its generator is an ignored test there, and the template's notice ships in `src/brain/LICENSE-MNI152.txt`). Nothing of it runs after t0. The name is display-only by design: never in any log, events.tsv, run.json or other file (`tests/welcome.rs` checks); `--sub` stays the only identifier. The logo comes from the rig's `[site] logo`. Its fonts are bundled (`src/fonts`, SIL Open Font License).
 - **Licensed stimuli** (e.g. the image set behind `examples/nsd`) may not be redistributed. Keep them outside the repo; `.gitignore` blocks the usual names and folders. Never commit them, or any participant data.
 
 ## Setup on a new Mac

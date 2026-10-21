@@ -11,12 +11,16 @@
 //! and Metal later reports when each frame really reached the screen. Drain
 //! those reports with `presented()`. If the Metal path isn't available,
 //! wgpu presents as usual and there are no reports (`has_feedback()`).
+//!
+//! `Renderer::headless` draws without a window, for snapshots in tests.
 
+use crate::brain;
 use crate::color::Color;
 use crate::present::{Drawable, MetalPresenter};
 use crate::rig::Corner;
-use crate::scene::{Item, Scene};
+use crate::scene::{Item, Scene, WelcomeScreen};
 use anyhow::{Context, Result, anyhow};
+use glyphon::cosmic_text::Weight;
 use glyphon::{
     Attrs, Buffer as TextBuffer, Cache, ColorMode, Family, FontSystem, Metrics, Resolution, Shaping,
     SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
@@ -73,6 +77,52 @@ struct ImageInstance {
     half: [f32; 2],
 }
 
+/// Uniforms for `shaders/welcome.wgsl`, in physical pixels from the top-left.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct WelcomeUniforms {
+    size: [f32; 2],
+    time: f32,
+    scale: f32,
+    /// Dot-matrix brain: center x, y, half height, strength (0 = none).
+    brain: [f32; 4],
+    /// Hairline rule: x0, y, x1, on.
+    rule: [f32; 4],
+    /// Standby dot: x, y, radius (logical px), on.
+    dot: [f32; 4],
+}
+
+/// How to shape a text, beyond its size and font.
+#[derive(Clone, Copy)]
+struct TextStyle {
+    weight: Weight,
+    /// Letter spacing, in em.
+    spacing: f32,
+    /// Wrap width in pixels.
+    wrap: f32,
+    /// Left-aligned (otherwise centered).
+    left: bool,
+    /// Line height, as a multiple of the size.
+    leading: f32,
+}
+
+/// A shaped text: its cache key, the width of its longest line, its height
+/// and its wrap width.
+struct Shaped {
+    key: String,
+    w: f32,
+    h: f32,
+    wrap: f32,
+}
+
+/// Fonts that ship inside Onset for the welcome screen: Space Grotesk and
+/// Space Mono (SIL Open Font License, `src/fonts/OFL-*.txt`).
+const BUNDLED_FONTS: [&[u8]; 2] =
+    [include_bytes!("fonts/SpaceGrotesk-Variable.ttf"), include_bytes!("fonts/SpaceMono-Regular.ttf")];
+
+/// Logo height, as a fraction of the screen height.
+const LOGO_HEIGHT: f32 = 0.085;
+
 struct GpuImage {
     bind_group: wgpu::BindGroup,
     width: f32,
@@ -92,7 +142,8 @@ pub struct PhotodiodePatch {
 
 pub struct Renderer {
     // Field order matters: the surface must drop before the window.
-    surface: wgpu::Surface<'static>,
+    // Both are None for a headless renderer.
+    surface: Option<wgpu::Surface<'static>>,
     instance: wgpu::Instance,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -108,6 +159,12 @@ pub struct Renderer {
     image_buf: wgpu::Buffer,
     sampler: wgpu::Sampler,
     images: HashMap<PathBuf, GpuImage>,
+    welcome_pipeline: wgpu::RenderPipeline,
+    welcome_buf: wgpu::Buffer,
+    welcome_bind: wgpu::BindGroup,
+    brain_pipeline: wgpu::RenderPipeline,
+    /// The brain's dots, uploaded the first time a welcome screen is drawn.
+    brain_points: Option<(wgpu::Buffer, u32)>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -129,7 +186,9 @@ pub struct Renderer {
     feedback_rx: Receiver<Presented>,
     present_failed: bool,
     next_id: u64,
-    window: Arc<Window>,
+    /// Shown in a top corner of the welcome screen (`set_logo`).
+    logo: Option<PathBuf>,
+    window: Option<Arc<Window>>,
 }
 
 impl Renderer {
@@ -188,8 +247,56 @@ impl Renderer {
                 Ok(p) => (Some(p), None),
                 Err(e) => (None, Some(e.to_string())),
             };
-        let (feedback_tx, feedback_rx) = channel();
+        let scale = window.scale_factor() as f32;
+        let mut renderer =
+            Renderer::build(instance, Some(surface), Some(window), adapter_info, device, queue, config, scale);
+        renderer.presenter = presenter;
+        renderer.no_feedback_reason = no_feedback_reason;
+        Ok(renderer)
+    }
 
+    /// A renderer with no window that only draws offscreen (`snapshot`), at
+    /// `width` × `height` physical pixels in the format a Mac display uses.
+    /// `acquire` always returns None.
+    pub fn headless(width: u32, height: u32, scale: f32) -> Result<Renderer> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::LowPower,
+            ..Default::default()
+        }))
+        .context("no GPU adapter")?;
+        let adapter_info = adapter.get_info();
+        let (device, queue) = pollster::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor { label: Some("onset"), ..Default::default() }),
+        )
+        .context("create GPU device")?;
+        let config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: wgpu::TextureFormat::Bgra8Unorm,
+            width: width.max(1),
+            height: height.max(1),
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Opaque,
+            view_formats: vec![],
+            desired_maximum_frame_latency: 1,
+            color_space: wgpu::SurfaceColorSpace::Auto,
+        };
+        Ok(Renderer::build(instance, None, None, adapter_info, device, queue, config, scale))
+    }
+
+    /// Pipelines, buffers and text setup, shared by both constructors.
+    #[allow(clippy::too_many_arguments)]
+    fn build(
+        instance: wgpu::Instance,
+        surface: Option<wgpu::Surface<'static>>,
+        window: Option<Arc<Window>>,
+        adapter_info: wgpu::AdapterInfo,
+        device: wgpu::Device,
+        queue: wgpu::Queue,
+        config: wgpu::SurfaceConfiguration,
+        scale: f32,
+    ) -> Renderer {
+        let format = config.format;
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: 16,
@@ -339,8 +446,110 @@ impl Renderer {
             ..Default::default()
         });
 
+        // Welcome background: one full-screen triangle, opaque.
+        let welcome_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("welcome"),
+            size: std::mem::size_of::<WelcomeUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let welcome_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("welcome"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let welcome_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("welcome"),
+            layout: &welcome_layout,
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: welcome_buf.as_entire_binding() }],
+        });
+        let welcome_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("welcome"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/welcome.wgsl").into()),
+        });
+        let welcome_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("welcome"),
+            bind_group_layouts: &[Some(&welcome_layout)],
+            ..Default::default()
+        });
+        let welcome_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("welcome"),
+            layout: Some(&welcome_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &welcome_shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &welcome_shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            cache: None,
+            multiview_mask: None,
+        });
+        // The welcome brain: one quad per dot, light added up.
+        let brain_attrs = wgpu::vertex_attr_array![0 => Float32x4];
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        };
+        let brain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("welcome brain"),
+            layout: Some(&welcome_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &welcome_shader,
+                entry_point: Some("vs_brain"),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 16,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &brain_attrs,
+                })],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &welcome_shader,
+                entry_point: Some("fs_brain"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(additive),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: strip,
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            cache: None,
+            multiview_mask: None,
+        });
+
         // Text
-        let font_system = FontSystem::new();
+        let mut font_system = FontSystem::new();
+        for font in BUNDLED_FONTS {
+            font_system.db_mut().load_font_data(font.to_vec());
+        }
         let swash_cache = SwashCache::new();
         let cache = Cache::new(&device);
         let viewport = Viewport::new(&device, &cache);
@@ -348,7 +557,8 @@ impl Renderer {
         let mut atlas = TextAtlas::with_color_mode(&device, &queue, &cache, format, color_mode);
         let text_renderer = TextRenderer::new(&mut atlas, &device, wgpu::MultisampleState::default(), None);
 
-        Ok(Renderer {
+        let (feedback_tx, feedback_rx) = channel();
+        Renderer {
             surface,
             instance,
             device,
@@ -364,22 +574,28 @@ impl Renderer {
             image_buf,
             sampler,
             images: HashMap::new(),
+            welcome_pipeline,
+            welcome_buf,
+            welcome_bind,
+            brain_pipeline,
+            brain_points: None,
             font_system,
             swash_cache,
             viewport,
             atlas,
             text_renderer,
             text_cache: HashMap::new(),
-            scale: window.scale_factor() as f32,
+            scale,
             photodiode: None,
-            presenter,
-            no_feedback_reason,
+            presenter: None,
+            no_feedback_reason: Some("no window to present to".into()),
             feedback_tx,
             feedback_rx,
             present_failed: false,
             next_id: 0,
+            logo: None,
             window,
-        })
+        }
     }
 
     /// Whether Metal reports when each frame reached the screen
@@ -414,13 +630,37 @@ impl Renderer {
         self.config.height = height;
         self.scale = scale;
         self.text_cache.clear();
-        self.surface.configure(&self.device, &self.config);
-        if let Some(presenter) = &mut self.presenter {
-            // configure() resets the layer's settings; put ours back.
-            // SAFETY: `self.config` is exactly what the surface was just
-            // configured with.
-            unsafe { presenter.after_configure(&self.config) };
+        if let Some(surface) = &self.surface {
+            surface.configure(&self.device, &self.config);
+            if let Some(presenter) = &mut self.presenter {
+                // configure() resets the layer's settings; put ours back.
+                // SAFETY: `self.config` is exactly what the surface was just
+                // configured with.
+                unsafe { presenter.after_configure(&self.config) };
+            }
         }
+        if let Err(e) = self.upload_logo() {
+            eprintln!("onset: {e:#}");
+        }
+    }
+
+    /// Show this image (PNG or JPEG) in a top corner of the welcome screen.
+    pub fn set_logo(&mut self, path: &Path) -> Result<()> {
+        self.logo = Some(path.to_path_buf());
+        self.upload_logo().inspect_err(|_| self.logo = None)
+    }
+
+    /// Upload the logo resized to the size it's drawn at, so it stays crisp
+    /// (images are drawn without mipmaps).
+    fn upload_logo(&mut self) -> Result<()> {
+        let Some(path) = self.logo.clone() else { return Ok(()) };
+        let img =
+            image::open(&path).with_context(|| format!("can't load logo {}", path.display()))?.to_rgba8();
+        let th = (LOGO_HEIGHT * self.config.height as f32).round().max(1.0) as u32;
+        let tw = (th as f32 * img.width() as f32 / img.height() as f32).round().max(1.0) as u32;
+        let img = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Lanczos3);
+        self.upload_image(&path, &img);
+        Ok(())
     }
 
     /// Load and upload images before the run so nothing is decoded mid-run.
@@ -437,6 +677,11 @@ impl Renderer {
         }
         let img =
             image::open(path).with_context(|| format!("can't load image {}", path.display()))?.to_rgba8();
+        self.upload_image(path, &img);
+        Ok(())
+    }
+
+    fn upload_image(&mut self, path: &Path, img: &image::RgbaImage) {
         let (w, h) = img.dimensions();
         let size = wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
@@ -456,7 +701,7 @@ impl Renderer {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &img,
+            img,
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: None },
             size,
         );
@@ -470,7 +715,6 @@ impl Renderer {
             ],
         });
         self.images.insert(path.to_path_buf(), GpuImage { bind_group, width: w as f32, height: h as f32 });
-        Ok(())
     }
 
     /// Shape and rasterize every text in `scenes` now, so the first frame
@@ -480,8 +724,17 @@ impl Renderer {
         let mut keys = Vec::new();
         for scene in scenes {
             for item in &scene.items {
-                if let Item::Text { text, size, font, .. } = item {
-                    keys.push(self.ensure_text(text, size * self.scale, font.as_deref(), w));
+                match item {
+                    Item::Text { text, size, font, .. } => {
+                        keys.push(self.ensure_text(text, size * self.scale, font.as_deref(), w))
+                    }
+                    Item::Welcome(wl) => {
+                        self.ensure_brain();
+                        let mut placed = Vec::new();
+                        self.layout_welcome(wl, &mut placed);
+                        keys.extend(placed.into_iter().map(|p| p.0));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -523,26 +776,27 @@ impl Renderer {
     }
 
     /// Block until the display can take a new frame. Returns None if there's
-    /// no frame this time (the window is hidden, or the surface needed
-    /// reconfiguring): just call again next loop.
+    /// no frame this time (the window is hidden, the surface needed
+    /// reconfiguring, or there's no window at all): just call again next loop.
     pub fn acquire(&mut self) -> Option<Frame> {
         if let Some(presenter) = &self.presenter {
             let drawable = presenter.next_drawable().ok()?;
             return Some(self.new_frame(Target::Metal(drawable)));
         }
-        let texture = match self.surface.get_current_texture() {
+        let (surface, window) = (self.surface.as_mut()?, self.window.as_ref()?);
+        let texture = match surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Some(frame),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => None,
             wgpu::CurrentSurfaceTexture::Outdated => {
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, &self.config);
                 None
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                if let Ok(s) = self.instance.create_surface(self.window.clone()) {
-                    self.surface = s;
+                if let Ok(s) = self.instance.create_surface(window.clone()) {
+                    *surface = s;
                 }
-                self.surface.configure(&self.device, &self.config);
+                surface.configure(&self.device, &self.config);
                 None
             }
             wgpu::CurrentSurfaceTexture::Validation => {
@@ -567,7 +821,9 @@ impl Renderer {
             Target::Wgpu(texture) => {
                 let view = texture.texture.create_view(&wgpu::TextureViewDescriptor::default());
                 self.render_to(&view, scene, photodiode_on);
-                self.window.pre_present_notify();
+                if let Some(window) = &self.window {
+                    window.pre_present_notify();
+                }
                 self.queue.present(texture);
             }
             Target::Metal(drawable) => {
@@ -577,7 +833,9 @@ impl Renderer {
                 // Fine to drop now: wgpu keeps the texture alive until the
                 // GPU is done with it.
                 drop((view, texture));
-                self.window.pre_present_notify();
+                if let Some(window) = &self.window {
+                    window.pre_present_notify();
+                }
                 // Straight after render_to's submit, on the same thread, so
                 // the present is queued after the rendering.
                 let Some(presenter) = &self.presenter else { return };
@@ -663,6 +921,7 @@ impl Renderer {
         let mut image_instances: Vec<ImageInstance> = Vec::new();
         let mut draws: Vec<Draw> = Vec::new();
         let mut texts: Vec<(String, f32, f32, Color)> = Vec::new();
+        let mut welcome: Option<&WelcomeScreen> = None;
 
         let push_shape = |shapes: &mut Vec<ShapeInstance>, draws: &mut Vec<Draw>, inst: ShapeInstance| {
             if shapes.len() >= MAX_SHAPES {
@@ -733,6 +992,21 @@ impl Renderer {
                     let key = self.ensure_text(text, size * s, font.as_deref(), w);
                     texts.push((key, x * s, y * s, *color));
                 }
+                Item::Welcome(wl) => welcome = Some(wl),
+            }
+        }
+        // Only the screens before t0 have a welcome item; without one this
+        // costs nothing (no uniform upload, no draw call).
+        let welcome = welcome.map(|wl| self.layout_welcome(wl, &mut texts));
+        let brain = welcome.as_ref().is_some_and(|(u, _)| u.brain[3] > 0.0);
+        if brain {
+            self.ensure_brain();
+        }
+        if let Some((u, logo)) = &welcome {
+            self.queue.write_buffer(&self.welcome_buf, 0, bytemuck::bytes_of(u));
+            if let (Some(logo), Some(path)) = (logo, &self.logo) {
+                draws.push(Draw::Image(path.clone(), image_instances.len() as u32));
+                image_instances.push(*logo);
             }
         }
 
@@ -822,6 +1096,16 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
+            if welcome.is_some() {
+                pass.set_pipeline(&self.welcome_pipeline);
+                pass.set_bind_group(0, &self.welcome_bind, &[]);
+                pass.draw(0..3, 0..1);
+                if let (true, Some((points, n))) = (brain, &self.brain_points) {
+                    pass.set_pipeline(&self.brain_pipeline);
+                    pass.set_vertex_buffer(0, points.slice(..));
+                    pass.draw(0..4, 0..*n);
+                }
+            }
             pass.set_bind_group(0, &self.globals_bind, &[]);
             for d in &draws {
                 match d {
@@ -851,22 +1135,238 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
     }
 
+    /// Lay out the welcome screen: its text goes into `texts`; returns the
+    /// shader's uniforms and where the logo goes. Sizes follow the screen
+    /// height, so it looks the same on any display.
+    ///
+    /// Everything hangs off one left margin, like a spec sheet: a small mono
+    /// label, the name large and light, a hairline rule, then label/value
+    /// rows, with the brain on the right. With instructions the name moves to
+    /// the top and the instructions go under the rule; they get smaller, and
+    /// then the name goes, if they don't fit.
+    fn layout_welcome(
+        &mut self,
+        wl: &WelcomeScreen,
+        texts: &mut Vec<(String, f32, f32, Color)>,
+    ) -> (WelcomeUniforms, Option<ImageInstance>) {
+        let (w, h) = (self.config.width as f32, self.config.height as f32);
+        let s = self.scale;
+        let (display, mono) = (Some(wl.font.as_str()), Some(wl.mono_font.as_str()));
+        let tone = |a: f32| Color { a: wl.color.a * a, ..wl.color };
+        let (x0, margin) = (0.075 * w, 0.06 * h);
+        let line = |weight: Weight, spacing: f32| TextStyle {
+            weight,
+            spacing,
+            wrap: 0.9 * w,
+            left: true,
+            leading: 1.25,
+        };
+        let (label_px, label_style) = (0.0165 * h, line(Weight::NORMAL, 0.16));
+        // Shaped text with its left edge at x and its top at y.
+        let put = |out: &mut Vec<(String, f32, f32, Color)>, t: &Shaped, x: f32, y: f32, color: Color| {
+            out.push((t.key.clone(), x - w / 2.0 + t.wrap / 2.0, h / 2.0 - y - t.h / 2.0, color))
+        };
+        let mut out = Vec::new();
+        let greeting = self.shape(&wl.greeting.to_uppercase(), label_px, mono, label_style);
+        let hero_line = wl.name.as_deref().unwrap_or(&wl.title);
+        let (brain, rule, dot);
+
+        if wl.waiting {
+            let hero = self.fit_line(hero_line, 0.13 * h, display, 0.48 * w);
+            let (value_px, value_style) = (0.03 * h, line(Weight::NORMAL, 0.0));
+            // Label/value rows; the status row gets the standby dot.
+            let mut rows = Vec::new();
+            if wl.name.is_some() {
+                let label = self.shape("STUDY", label_px, mono, label_style);
+                rows.push((label, self.shape(&wl.title, value_px, display, value_style), false));
+            }
+            if let Some(text) = &wl.text {
+                let label = self.shape("STATUS", label_px, mono, label_style);
+                rows.push((label, self.shape(text, value_px, display, value_style), true));
+            }
+            let row_gap = 0.016 * h;
+            let rows_h: f32 = rows.iter().map(|(_, v, _)| v.h + row_gap).sum();
+            let mut y = 0.5 * h - (greeting.h + hero.h + 0.05 * h + rows_h) / 2.0;
+            put(&mut out, &greeting, x0, y, tone(0.5));
+            y += greeting.h;
+            put(&mut out, &hero, x0, y, tone(1.0));
+            y += hero.h + 0.02 * h;
+            rule = [x0, y, x0 + 0.42 * w, 1.0];
+            y += 0.03 * h;
+            let value_x = x0 + 0.095 * w;
+            let mut standby = [0.0; 4];
+            for (label, value, has_dot) in &rows {
+                put(&mut out, label, x0, y + (value.h - label.h) / 2.0, tone(0.45));
+                let mut x = value_x;
+                if *has_dot {
+                    standby = [value_x + 4.0 * s, y + value.h / 2.0, 3.5, 1.0];
+                    x += 0.02 * h;
+                }
+                put(&mut out, value, x, y, tone(0.88));
+                y += value.h + row_gap;
+            }
+            dot = standby;
+            brain = [0.74 * w, 0.52 * h, 0.29 * h, 1.0];
+        } else {
+            let top = if self.logo.is_some() { margin + LOGO_HEIGHT * h + 0.05 * h } else { margin };
+            let bottom = h - margin - 0.05 * h;
+            let hero = self.fit_line(hero_line, 0.075 * h, display, 0.55 * w);
+            let study = wl.name.as_ref().map(|_| {
+                let label = self.shape("STUDY", label_px, mono, label_style);
+                (label, self.shape(&wl.title, 0.026 * h, display, line(Weight::NORMAL, 0.0)))
+            });
+            let label = self.shape("INSTRUCTIONS", label_px, mono, label_style);
+            let header_h = greeting.h + hero.h + 0.055 * h;
+            // The instructions at `font_size`, but at most 3.4% of the screen
+            // height, made smaller until they fit; without the name if need be.
+            let text_font = wl.text_font.as_deref().or(display);
+            let style =
+                TextStyle { weight: Weight::NORMAL, spacing: 0.0, wrap: 0.58 * w, left: true, leading: 1.4 };
+            let size = (wl.text_size * s).min(0.034 * h);
+            let mut layout = None;
+            'fit: for with_header in [true, false] {
+                for scale in [1.0, 0.9, 0.8, 0.7] {
+                    let body = wl.text.as_deref().map(|t| self.shape(t, size * scale, text_font, style));
+                    let start = top + if with_header { header_h } else { 0.0 } + label.h + 0.012 * h;
+                    if start + body.as_ref().map_or(0.0, |b| b.h) <= bottom || (!with_header && scale == 0.7)
+                    {
+                        layout = Some((with_header, body));
+                        break 'fit;
+                    }
+                }
+            }
+            let (with_header, body) = layout.expect("the last try always fits");
+            let mut y = top;
+            if with_header {
+                put(&mut out, &greeting, x0, y, tone(0.5));
+                y += greeting.h;
+                put(&mut out, &hero, x0, y, tone(1.0));
+                if let Some((study_label, title)) = &study {
+                    // On the right, level with the bottom of the name.
+                    let tx = w - x0 - title.w;
+                    let ty = y + hero.h - title.h;
+                    put(&mut out, title, tx, ty, tone(0.88));
+                    put(
+                        &mut out,
+                        study_label,
+                        tx - 0.012 * w - study_label.w,
+                        ty + (title.h - study_label.h) / 2.0,
+                        tone(0.45),
+                    );
+                }
+                y += hero.h + 0.02 * h;
+                rule = [x0, y, w - x0, 1.0];
+                y += 0.035 * h;
+            } else {
+                rule = [0.0; 4];
+            }
+            put(&mut out, &label, x0, y, tone(0.45));
+            y += label.h + 0.012 * h;
+            if let Some(body) = &body {
+                put(&mut out, body, x0, y, tone(0.86));
+            }
+            dot = [0.0; 4];
+            brain = [0.8 * w, (y + bottom) / 2.0, 0.2 * h, 0.6];
+        }
+
+        // Corners: the logo top left and "POWERED BY ONSET" bottom right,
+        // each moving out of the photodiode patch's way.
+        let patch = |corner: Corner| match &self.photodiode {
+            Some(p) if p.corner == corner => p.size * s + margin,
+            _ => 0.0,
+        };
+        let footer_left = patch(Corner::BottomRight);
+        let logo_right = patch(Corner::TopLeft) > 0.0;
+        if wl.powered_by {
+            let px = 0.0145 * h;
+            let by = self.shape("POWERED BY", px, mono, line(Weight::NORMAL, 0.16));
+            let onset = self.shape("ONSET", px, mono, line(Weight::NORMAL, 0.16));
+            let right = w - x0 - footer_left;
+            let top = h - margin - by.h;
+            put(&mut out, &onset, right - onset.w, top, tone(0.9));
+            put(&mut out, &by, right - onset.w - 0.6 * px - by.w, top, tone(0.38));
+        }
+        let logo = self.logo.as_ref().and_then(|p| self.images.get(p)).map(|img| {
+            let lh = LOGO_HEIGHT * h;
+            let lw = lh * img.width / img.height;
+            let left = if logo_right { w - x0 - lw } else { x0 };
+            ImageInstance {
+                center: [left + lw / 2.0 - w / 2.0, h / 2.0 - margin - lh / 2.0],
+                half: [lw / 2.0, lh / 2.0],
+            }
+        });
+        texts.extend(out);
+        (WelcomeUniforms { size: [w, h], time: wl.time, scale: s, brain, rule, dot }, logo)
+    }
+
+    /// Upload the brain's dots, once.
+    fn ensure_brain(&mut self) {
+        if self.brain_points.is_some() {
+            return;
+        }
+        let dots = brain::side_dots();
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("welcome brain"),
+            size: std::mem::size_of_val(dots.as_slice()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&dots));
+        self.brain_points = Some((buffer, dots.len() as u32));
+    }
+
+    /// `text` in a light weight at `px`, or smaller until it fits on one
+    /// line no wider than `max_w`.
+    fn fit_line(&mut self, text: &str, mut px: f32, font: Option<&str>, max_w: f32) -> Shaped {
+        let wrap = 0.9 * self.config.width as f32;
+        loop {
+            let style = TextStyle { weight: Weight::LIGHT, spacing: -0.025, wrap, left: true, leading: 1.15 };
+            let shaped = self.shape(text, px, font, style);
+            let lines = self.text_cache[&shaped.key].layout_runs().count();
+            if (lines <= 1 && shaped.w <= max_w) || px < 20.0 {
+                return shaped;
+            }
+            px *= 0.9;
+        }
+    }
+
+    /// Shape `text` (cached) and measure it.
+    fn shape(&mut self, text: &str, px: f32, font: Option<&str>, style: TextStyle) -> Shaped {
+        let key = self.ensure_styled_text(text, px, font, style);
+        let (w, h) = line_extent(&self.text_cache[&key]);
+        Shaped { key, w, h, wrap: style.wrap }
+    }
+
     /// Shape `text` once and cache it; returns the cache key.
     fn ensure_text(&mut self, text: &str, px: f32, font: Option<&str>, screen_w: f32) -> String {
-        let key = format!("{px}|{font:?}|{text}");
+        let style = TextStyle {
+            weight: Weight::NORMAL,
+            spacing: 0.0,
+            wrap: 0.9 * screen_w,
+            left: false,
+            leading: 1.3,
+        };
+        self.ensure_styled_text(text, px, font, style)
+    }
+
+    /// `ensure_text` with a weight, letter spacing, wrap width, alignment and line height.
+    fn ensure_styled_text(&mut self, text: &str, px: f32, font: Option<&str>, style: TextStyle) -> String {
+        let TextStyle { weight, spacing, wrap, left, leading } = style;
+        let key = format!("{px}|{font:?}|{}|{spacing}|{wrap}|{left}|{leading}|{text}", weight.0);
         if !self.text_cache.contains_key(&key) {
-            let mut buf = TextBuffer::new(&mut self.font_system, Metrics::new(px, px * 1.3));
-            buf.set_size(Some(screen_w * 0.9), None);
+            let mut buf = TextBuffer::new(&mut self.font_system, Metrics::new(px, px * leading));
+            buf.set_size(Some(wrap), None);
             let family = match font {
                 Some(name) => Family::Name(name),
                 None => Family::SansSerif,
             };
-            buf.set_text(
-                text,
-                &Attrs::new().family(family),
-                Shaping::Advanced,
-                Some(glyphon::cosmic_text::Align::Center),
-            );
+            let mut attrs = Attrs::new().family(family).weight(weight);
+            if spacing != 0.0 {
+                attrs = attrs.letter_spacing(spacing);
+            }
+            let align =
+                if left { glyphon::cosmic_text::Align::Left } else { glyphon::cosmic_text::Align::Center };
+            buf.set_text(text, &attrs, Shaping::Advanced, Some(align));
             buf.shape_until_scroll(&mut self.font_system, false);
             self.text_cache.insert(key.clone(), buf);
         }
@@ -879,4 +1379,10 @@ fn text_extent(buf: &TextBuffer) -> (f32, f32) {
     let width = buf.size().0.unwrap_or(0.0);
     let height = buf.layout_runs().map(|r| r.line_top + r.line_height).fold(0.0, f32::max);
     (width, height)
+}
+
+/// Width of the longest line and height of shaped text.
+fn line_extent(buf: &TextBuffer) -> (f32, f32) {
+    let width = buf.layout_runs().map(|r| r.line_w).fold(0.0, f32::max);
+    (width, text_extent(buf).1)
 }

@@ -31,6 +31,9 @@ The **measured onset** of an event is when its first frame was on screen, as Met
 
 **Logs wait for reports.** Each frame's record is held until its report is in (or given up on), so `frames.tsv` has the presented time of every frame (`presented`, `presented_t`, and `report`: `shown`, `not_shown`, `no_report`, or `n/a` without reports). When the run ends, Onset keeps showing the final screen for up to 0.5 s until the last frames have been reported, then writes the logs.
 
+**Welcome screen:** with a `[welcome]` table, those two screens draw an animated background in one full-screen shader pass. Its animation time comes from the predicted flip times, not from sleeps or the wall clock. From the first kept trigger on, only the experiment's own screens are drawn, so the welcome screen adds no draw calls and no per-frame work during the run.
+
+
 The **refresh period** used by the run is locked when it starts: the planner's measured period if it has one, otherwise the median gap between frames during the instructions and waiting screens. It's recorded as `measured_refresh_hz` in `run.json`.
 
 **Dropped frames** are counted from the presented times while the run is going: a gap of n refreshes between frames on screen means n − 1 refreshes showed the previous frame again (a frame without a report is assumed to have used a refresh, so it can't make a drop appear). Without reports, an acquire interval longer than 1.5 periods counts `round(interval / period) − 1`. Drops appear in `frames.tsv` (`missed`), the status line, and `run.json`.

@@ -45,5 +45,8 @@ corner = "bottom-left"
 size = 40
 flash_frames = 3
 
+[site]
+logo = "bcm-logo-white.png"  # on the welcome screen; point it at your own
+
 [output]
 dir = "data"
