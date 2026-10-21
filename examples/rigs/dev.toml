@@ -23,3 +23,6 @@ size = 40
 
 [output]
 dir = "data"
+
+[site]
+logo = "bcm-logo-white.png"  # on the welcome screen; point it at your own
