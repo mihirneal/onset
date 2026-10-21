@@ -69,8 +69,6 @@ pub struct WelcomeScreen {
     pub name: Option<String>,
     /// The instructions, or the waiting text.
     pub text: Option<String>,
-    /// Size of the instructions in logical px (`[experiment] font_size`).
-    pub text_size: f32,
     pub text_font: Option<String>,
     pub color: Color,
     pub font: String,
@@ -116,7 +114,6 @@ impl Scene {
             title: w.title.clone().unwrap_or_else(|| m.name.clone()),
             name: None,
             text: (!text.trim().is_empty()).then(|| text.to_string()),
-            text_size: m.font_size,
             text_font: m.font.clone(),
             color: w.color,
             font: w.font.clone(),

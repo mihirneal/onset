@@ -1137,13 +1137,15 @@ impl Renderer {
 
     /// Lay out the welcome screen: its text goes into `texts`; returns the
     /// shader's uniforms and where the logo goes. Sizes follow the screen
-    /// height, so it looks the same on any display.
+    /// height, so it looks the same on any display, and the content: the
+    /// instructions get as large as the room allows, and the brain fills the
+    /// space the text leaves.
     ///
-    /// Everything hangs off one left margin, like a spec sheet: a small mono
-    /// label, the name large and light, a hairline rule, then label/value
-    /// rows, with the brain on the right. With instructions the name moves to
-    /// the top and the instructions go under the rule; they get smaller, and
-    /// then the name goes, if they don't fit.
+    /// Everything hangs off one left margin, like a spec sheet: a mono label,
+    /// the name large and light, a hairline rule, then label/value rows, with
+    /// the brain on the right. With instructions the name moves to the top and
+    /// the instructions go under the rule; if they don't fit even small, the
+    /// name goes.
     fn layout_welcome(
         &mut self,
         wl: &WelcomeScreen,
@@ -1161,7 +1163,7 @@ impl Renderer {
             left: true,
             leading: 1.25,
         };
-        let (label_px, label_style) = (0.0165 * h, line(Weight::NORMAL, 0.16));
+        let (label_px, label_style, label_tone) = (0.024 * h, line(Weight::NORMAL, 0.16), tone(0.6));
         // Shaped text with its left edge at x and its top at y.
         let put = |out: &mut Vec<(String, f32, f32, Color)>, t: &Shaped, x: f32, y: f32, color: Color| {
             out.push((t.key.clone(), x - w / 2.0 + t.wrap / 2.0, h / 2.0 - y - t.h / 2.0, color))
@@ -1172,8 +1174,8 @@ impl Renderer {
         let (brain, rule, dot);
 
         if wl.waiting {
-            let hero = self.fit_line(hero_line, 0.13 * h, display, 0.48 * w);
-            let (value_px, value_style) = (0.03 * h, line(Weight::NORMAL, 0.0));
+            let hero = self.fit_line(hero_line, 0.14 * h, display, 0.48 * w);
+            let (value_px, value_style) = (0.04 * h, line(Weight::NORMAL, 0.0));
             // Label/value rows; the status row gets the standby dot.
             let mut rows = Vec::new();
             if wl.name.is_some() {
@@ -1184,52 +1186,59 @@ impl Renderer {
                 let label = self.shape("STATUS", label_px, mono, label_style);
                 rows.push((label, self.shape(text, value_px, display, value_style), true));
             }
-            let row_gap = 0.016 * h;
+            let (row_gap, dot_r) = (0.02 * h, 5.0);
+            let value_x = x0 + rows.iter().map(|(l, _, _)| l.w).fold(0.0, f32::max) + 0.03 * w;
+            let dot_space = 2.0 * dot_r * s + 0.016 * h;
             let rows_h: f32 = rows.iter().map(|(_, v, _)| v.h + row_gap).sum();
-            let mut y = 0.5 * h - (greeting.h + hero.h + 0.05 * h + rows_h) / 2.0;
-            put(&mut out, &greeting, x0, y, tone(0.5));
+            let rows_w =
+                rows.iter().map(|(_, v, d)| v.w + if *d { dot_space } else { 0.0 }).fold(0.0, f32::max);
+            let right = (x0 + hero.w).max(value_x + rows_w);
+            let mut y = 0.5 * h - (greeting.h + hero.h + 0.055 * h + rows_h) / 2.0;
+            put(&mut out, &greeting, x0, y, label_tone);
             y += greeting.h;
             put(&mut out, &hero, x0, y, tone(1.0));
             y += hero.h + 0.02 * h;
-            rule = [x0, y, x0 + 0.42 * w, 1.0];
-            y += 0.03 * h;
-            let value_x = x0 + 0.095 * w;
+            rule = [x0, y, right, 1.0];
+            y += 0.035 * h;
             let mut standby = [0.0; 4];
             for (label, value, has_dot) in &rows {
-                put(&mut out, label, x0, y + (value.h - label.h) / 2.0, tone(0.45));
+                put(&mut out, label, x0, y + (value.h - label.h) / 2.0, label_tone);
                 let mut x = value_x;
                 if *has_dot {
-                    standby = [value_x + 4.0 * s, y + value.h / 2.0, 3.5, 1.0];
-                    x += 0.02 * h;
+                    standby = [value_x + dot_r * s, y + value.h / 2.0, dot_r, 1.0];
+                    x += dot_space;
                 }
-                put(&mut out, value, x, y, tone(0.88));
+                put(&mut out, value, x, y, tone(0.9));
                 y += value.h + row_gap;
             }
             dot = standby;
-            brain = [0.74 * w, 0.52 * h, 0.29 * h, 1.0];
+            // The brain fills the space to the right of the text.
+            brain = fit_brain([right + 0.04 * w, 0.12 * h, w - 0.045 * w, 0.88 * h], 0.36 * h, 1.0);
         } else {
-            let top = if self.logo.is_some() { margin + LOGO_HEIGHT * h + 0.05 * h } else { margin };
-            let bottom = h - margin - 0.05 * h;
-            let hero = self.fit_line(hero_line, 0.075 * h, display, 0.55 * w);
+            let top = if self.logo.is_some() { margin + LOGO_HEIGHT * h + 0.045 * h } else { margin };
+            let bottom = h - margin - 0.06 * h;
+            let hero = self.fit_line(hero_line, 0.085 * h, display, 0.55 * w);
             let study = wl.name.as_ref().map(|_| {
                 let label = self.shape("STUDY", label_px, mono, label_style);
-                (label, self.shape(&wl.title, 0.026 * h, display, line(Weight::NORMAL, 0.0)))
+                (label, self.shape(&wl.title, 0.034 * h, display, line(Weight::NORMAL, 0.0)))
             });
             let label = self.shape("INSTRUCTIONS", label_px, mono, label_style);
             let header_h = greeting.h + hero.h + 0.055 * h;
-            // The instructions at `font_size`, but at most 3.4% of the screen
-            // height, made smaller until they fit; without the name if need be.
+            // The instructions as large as fits (4.3% of the screen height at
+            // most, 2.6% at least), without the name if need be.
             let text_font = wl.text_font.as_deref().or(display);
             let style =
-                TextStyle { weight: Weight::NORMAL, spacing: 0.0, wrap: 0.58 * w, left: true, leading: 1.4 };
-            let size = (wl.text_size * s).min(0.034 * h);
+                TextStyle { weight: Weight::NORMAL, spacing: 0.0, wrap: 0.62 * w, left: true, leading: 1.4 };
+            let sizes: Vec<f32> = std::iter::successors(Some(0.043 * h), |px| Some(px * 0.93))
+                .take_while(|px| *px >= 0.026 * h)
+                .collect();
             let mut layout = None;
             'fit: for with_header in [true, false] {
-                for scale in [1.0, 0.9, 0.8, 0.7] {
-                    let body = wl.text.as_deref().map(|t| self.shape(t, size * scale, text_font, style));
-                    let start = top + if with_header { header_h } else { 0.0 } + label.h + 0.012 * h;
-                    if start + body.as_ref().map_or(0.0, |b| b.h) <= bottom || (!with_header && scale == 0.7)
-                    {
+                for (i, px) in sizes.iter().enumerate() {
+                    let body = wl.text.as_deref().map(|t| self.shape(t, *px, text_font, style));
+                    let start = top + if with_header { header_h } else { 0.0 } + label.h + 0.014 * h;
+                    let last = !with_header && i == sizes.len() - 1;
+                    if start + body.as_ref().map_or(0.0, |b| b.h) <= bottom || last {
                         layout = Some((with_header, body));
                         break 'fit;
                     }
@@ -1238,20 +1247,20 @@ impl Renderer {
             let (with_header, body) = layout.expect("the last try always fits");
             let mut y = top;
             if with_header {
-                put(&mut out, &greeting, x0, y, tone(0.5));
+                put(&mut out, &greeting, x0, y, label_tone);
                 y += greeting.h;
                 put(&mut out, &hero, x0, y, tone(1.0));
                 if let Some((study_label, title)) = &study {
                     // On the right, level with the bottom of the name.
                     let tx = w - x0 - title.w;
                     let ty = y + hero.h - title.h;
-                    put(&mut out, title, tx, ty, tone(0.88));
+                    put(&mut out, title, tx, ty, tone(0.9));
                     put(
                         &mut out,
                         study_label,
                         tx - 0.012 * w - study_label.w,
                         ty + (title.h - study_label.h) / 2.0,
-                        tone(0.45),
+                        label_tone,
                     );
                 }
                 y += hero.h + 0.02 * h;
@@ -1260,13 +1269,15 @@ impl Renderer {
             } else {
                 rule = [0.0; 4];
             }
-            put(&mut out, &label, x0, y, tone(0.45));
-            y += label.h + 0.012 * h;
+            put(&mut out, &label, x0, y, label_tone);
+            y += label.h + 0.014 * h;
+            let text_right = body.as_ref().map_or(x0, |b| x0 + b.w);
             if let Some(body) = &body {
-                put(&mut out, body, x0, y, tone(0.86));
+                put(&mut out, body, x0, y, tone(0.88));
             }
             dot = [0.0; 4];
-            brain = [0.8 * w, (y + bottom) / 2.0, 0.2 * h, 0.6];
+            // The brain fills the space to the right of the instructions.
+            brain = fit_brain([text_right + 0.05 * w, y, w - x0, bottom], 0.3 * h, 0.75);
         }
 
         // Corners: the logo top left and "POWERED BY ONSET" bottom right,
@@ -1278,13 +1289,13 @@ impl Renderer {
         let footer_left = patch(Corner::BottomRight);
         let logo_right = patch(Corner::TopLeft) > 0.0;
         if wl.powered_by {
-            let px = 0.0145 * h;
+            let px = 0.021 * h;
             let by = self.shape("POWERED BY", px, mono, line(Weight::NORMAL, 0.16));
             let onset = self.shape("ONSET", px, mono, line(Weight::NORMAL, 0.16));
             let right = w - x0 - footer_left;
             let top = h - margin - by.h;
-            put(&mut out, &onset, right - onset.w, top, tone(0.9));
-            put(&mut out, &by, right - onset.w - 0.6 * px - by.w, top, tone(0.38));
+            put(&mut out, &onset, right - onset.w, top, tone(1.0));
+            put(&mut out, &by, right - onset.w - 0.6 * px - by.w, top, tone(0.5));
         }
         let logo = self.logo.as_ref().and_then(|p| self.images.get(p)).map(|img| {
             let lh = LOGO_HEIGHT * h;
@@ -1372,6 +1383,22 @@ impl Renderer {
         }
         key
     }
+}
+
+/// Brain uniforms that fit its side view, centered, in the box `area`
+/// (x0, y0, x1, y1 in pixels from the top-left), at most `max_scale` pixels
+/// per unit.
+fn fit_brain(area: [f32; 4], max_scale: f32, strength: f32) -> [f32; 4] {
+    let [left, bottom, right, top] = brain::side_extent();
+    let scale =
+        ((area[2] - area[0]) / (right - left)).min((area[3] - area[1]) / (top - bottom)).min(max_scale);
+    if scale <= 0.0 {
+        return [0.0; 4];
+    }
+    // Screen y grows downward; the dots' y grows upward.
+    let cx = (area[0] + area[2]) / 2.0 - (left + right) / 2.0 * scale;
+    let cy = (area[1] + area[3]) / 2.0 + (bottom + top) / 2.0 * scale;
+    [cx, cy, scale, strength]
 }
 
 /// Width (the wrap box) and height of shaped text.

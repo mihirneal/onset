@@ -31,6 +31,17 @@ pub fn side_dots() -> Vec<[f32; 4]> {
         .collect()
 }
 
+/// The side view's bounding box, `[left, bottom, right, top]`, in the
+/// dots' units.
+pub fn side_extent() -> [f32; 4] {
+    static EXTENT: std::sync::OnceLock<[f32; 4]> = std::sync::OnceLock::new();
+    *EXTENT.get_or_init(|| {
+        side_dots().iter().fold([f32::MAX, f32::MAX, f32::MIN, f32::MIN], |e, d| {
+            [e[0].min(d[0]), e[1].min(d[1]), e[2].max(d[0]), e[3].max(d[1])]
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
