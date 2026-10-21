@@ -1,9 +1,9 @@
-// The welcome screen's animated background ("monochrome" style), white on
-// black: a dot-matrix brain (an axial slice) whose dots flicker with slow,
-// drifting activity, a hairline rule with a light gliding along it, and a
-// breathing standby dot. One full-screen triangle, drawn only on the
-// screens before t = 0. Pixel coordinates are physical pixels from the
-// top-left corner.
+// The welcome screen ("monochrome" style), white on black, drawn only on the
+// screens before t = 0. Two passes share these uniforms: a full-screen
+// triangle for the hairline rule and the standby dot (`vs_main`/`fs_main`),
+// and a slowly turning point-cloud brain, one small quad per surface point
+// from `brain.rs` (`vs_brain`/`fs_brain`). Pixel coordinates are physical
+// pixels from the top-left corner.
 
 struct Welcome {
     size: vec2<f32>,
@@ -11,7 +11,7 @@ struct Welcome {
     time: f32,
     // Physical pixels per logical pixel.
     scale: f32,
-    // Dot-matrix brain: center x, y, half height, strength (0 = none).
+    // Brain: center x, y, pixels per unit (about half its length), strength (0 = none).
     brain: vec4<f32>,
     // Hairline rule: x0, y, x1, on.
     rule: vec4<f32>,
@@ -33,73 +33,12 @@ fn sq(x: f32) -> f32 {
     return x * x;
 }
 
-fn hash12(p: vec2<f32>) -> f32 {
-    var p3 = fract(vec3<f32>(p.x, p.y, p.x) * 0.1031);
-    p3 += dot(p3, p3.yzx + 33.33);
-    return fract((p3.x + p3.y) * p3.z);
-}
-
-fn noise(p: vec2<f32>) -> f32 {
-    let i = floor(p);
-    let f = fract(p);
-    let k = f * f * (3.0 - 2.0 * f);
-    let a = mix(hash12(i), hash12(i + vec2<f32>(1.0, 0.0)), k.x);
-    let b = mix(hash12(i + vec2<f32>(0.0, 1.0)), hash12(i + vec2<f32>(1.0, 1.0)), k.x);
-    return mix(a, b, k.y);
-}
-
-fn fbm(p: vec2<f32>) -> f32 {
-    var v = 0.0;
-    var a = 0.5;
-    var x = p;
-    for (var i = 0; i < 4; i++) {
-        v += a * noise(x);
-        x = x * 2.03 + vec2<f32>(17.1, 9.2);
-        a *= 0.5;
-    }
-    return v;
-}
-
-fn sd_ellipse(p: vec2<f32>, r: vec2<f32>) -> f32 {
-    // Approximate, but good near the edge, which is all we need.
-    return (length(p / r) - 1.0) * min(r.x, r.y);
-}
-
-fn sd_capsule(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>, r: f32) -> f32 {
-    let pa = p - a;
-    let ba = b - a;
-    return length(pa - ba * clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0)) - r;
-}
-
-fn smin(a: f32, b: f32, k: f32) -> f32 {
-    let h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
-    return mix(b, a, h) - k * h * (1.0 - h);
-}
-
-// Signed distance to a brain seen from the side, facing left (negative
-// inside), in units of the figure's half height, y down: cerebrum, temporal
-// lobe, cerebellum and brainstem, with a bumpy cortical surface (gyri).
-fn brain_sd(q: vec2<f32>) -> f32 {
-    let p = q + vec2<f32>(0.0, -0.06);
-    let cerebrum = sd_ellipse(p - vec2<f32>(-0.04, -0.20), vec2<f32>(1.0, 0.66));
-    let temporal = sd_ellipse(p - vec2<f32>(-0.30, 0.16), vec2<f32>(0.52, 0.30));
-    let cerebellum = sd_ellipse(p - vec2<f32>(0.52, 0.40), vec2<f32>(0.38, 0.25));
-    let stem = sd_capsule(p, vec2<f32>(0.12, 0.22), vec2<f32>(0.20, 0.86), 0.11);
-    var d = smin(cerebrum, temporal, 0.12);
-    d = smin(d, cerebellum, 0.03);
-    d = smin(d, stem, 0.05);
-    return d + 0.045 * (noise(p * 7.0) - 0.5);
-}
-
-// 1 on the big grooves, drawn as gaps between dots: the lateral (Sylvian)
-// fissure, the central sulcus, and the notch above the cerebellum.
-fn grooves(q: vec2<f32>) -> f32 {
-    let p = q + vec2<f32>(0.0, -0.06);
-    let bend = vec2<f32>(0.0, 0.06 * sin(p.x * 3.0));
-    let sylvian = sd_capsule(p + bend, vec2<f32>(-0.64, 0.04), vec2<f32>(0.22, -0.14), 0.0);
-    let central = sd_capsule(p, vec2<f32>(0.04, -0.88), vec2<f32>(-0.16, -0.18), 0.0);
-    let notch = sd_capsule(p, vec2<f32>(0.20, 0.24), vec2<f32>(0.92, 0.16), 0.0);
-    return step(min(min(sylvian, central), notch), 0.03);
+fn hashu(n: u32) -> f32 {
+    var x = n;
+    x = (x ^ (x >> 16u)) * 0x7feb352du;
+    x = (x ^ (x >> 15u)) * 0x846ca68bu;
+    x = x ^ (x >> 16u);
+    return f32(x) / 4294967295.0;
 }
 
 @fragment
@@ -108,30 +47,6 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let s = u.scale;
     let t = u.time;
     var v = 0.0;
-
-    // The brain: one dot per grid cell, 42 rows tall. Dots inside glow
-    // faintly, brighter along the cortex and in slowly drifting patches of
-    // "activity", and fire short spikes, more often where it's busy.
-    let bh = max(u.brain.z, 1.0);
-    let spacing = bh / 21.0;
-    let lp = px - u.brain.xy;
-    let cell = floor(lp / spacing + 0.5);
-    let n = cell * spacing / bh;
-    let sd = brain_sd(n);
-    let mask = step(sd, 0.0) * (1.0 - grooves(n));
-    let field = fbm(n * 1.6 + vec2<f32>(t * 0.045, -t * 0.035));
-    let busy = smoothstep(0.48, 0.72, field);
-    let cortex = 1.0 - smoothstep(0.0, 0.10, -sd);
-    let k = t * 0.7 + hash12(cell + 3.1);
-    let fire = step(hash12(cell * 1.31 + floor(k) * 7.7), 0.04 + 0.30 * busy);
-    let spike = fire * exp(-fract(k) / 0.7 * 5.0);
-    let level = 0.20 + 0.20 * cortex + 0.45 * busy + 0.55 * spike;
-    let radius = 1.45 + 0.5 * spike + 0.3 * busy;
-    let d = length(lp - cell * spacing) / s;
-    v += (1.0 - smoothstep(radius - 0.6, radius + 0.6, d)) * min(level, 1.0) * mask * u.brain.w;
-    // A faint hairline around it.
-    let edge = brain_sd(lp / bh) * bh / s - 0.5 * spacing / s;
-    v += exp(-sq(edge / 0.7)) * 0.10 * u.brain.w;
 
     // Hairline rule with a soft light gliding along it every 7 s.
     let along = step(u.rule.x, px.x) * step(px.x, u.rule.z);
@@ -146,8 +61,63 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     let core = 1.0 - smoothstep(u.dot.z - 0.6, u.dot.z + 0.6, dd);
     let wave = exp(-sq((dd - u.dot.z - phase * 12.0) / 1.0)) * sq(1.0 - phase);
     v += (core * (0.8 + 0.2 * sin(t * TAU / 2.0)) + wave * 0.55) * u.dot.w;
+    return vec4<f32>(v, v, v, 1.0);
+}
 
-    // Dither, so the faint dots don't band.
-    v += (hash12(px) - 0.5) / 255.0;
+struct BrainOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local: vec2<f32>,
+    @location(1) @interpolate(flat) level: f32,
+    @location(2) @interpolate(flat) radius: f32,
+};
+
+// One surface point of the brain (`at`: position and a 0-1 seed; `normal`:
+// the outward normal and the point's relief, 1 on a gyral crown, 0 in a
+// sulcus). It turns slowly about the vertical axis, seen from a little
+// above, in perspective. Crowns are bright and sulci dark, so the folds show;
+// the outline glows where the surface turns away; the far side is faint; and
+// the cortex flickers: random spikes, more of them inside a slow wave that
+// drifts from front to back.
+@vertex
+fn vs_brain(@builtin(vertex_index) vi: u32, @location(0) at: vec4<f32>, @location(1) normal: vec4<f32>) -> BrainOut {
+    let t = u.time;
+    let yaw = 0.7 + t * 0.11;
+    let cy = cos(yaw);
+    let sy = sin(yaw);
+    let cp = cos(0.3);
+    let sp = sin(0.3);
+    let turn = vec3<f32>(cy * at.x + sy * at.z, at.y, -sy * at.x + cy * at.z);
+    let p = vec3<f32>(turn.x, cp * turn.y - sp * turn.z, sp * turn.y + cp * turn.z);
+    let nt = vec3<f32>(cy * normal.x + sy * normal.z, normal.y, -sy * normal.x + cy * normal.z);
+    let n = vec3<f32>(nt.x, cp * nt.y - sp * nt.z, sp * nt.y + cp * nt.z);
+    let screen = u.brain.xy + vec2<f32>(p.x, -p.y) * u.brain.z * (4.0 / (4.0 - p.z));
+
+    let rim = 1.0 - abs(n.z);
+    let near = clamp(0.5 + 0.5 * p.z, 0.0, 1.0);
+    let wave = smoothstep(0.7, 1.0, 0.5 + 0.5 * sin(at.z * 3.0 + at.y * 1.5 + t * 0.9));
+    let k = t * 0.55 + at.w * 17.0;
+    let fire = step(hashu(u32(at.w * 1.0e6) ^ (u32(floor(k)) * 0x9e3779b9u)), 0.04 + 0.2 * wave);
+    let spike = fire * exp(-fract(k) * 6.0);
+    let relief = normal.w * normal.w * normal.w;
+    // Points on the far side, facing away, are faint, so it reads as a solid surface.
+    let front = mix(0.1, 1.0, smoothstep(-0.25, 0.2, n.z));
+    let level = (0.012 + 0.5 * relief + 0.24 * rim * rim * (0.3 + 0.7 * relief) + 0.08 * wave)
+        * mix(0.35, 1.0, near) * front + 0.75 * spike * front;
+    let radius = (0.7 + 0.35 * near + 0.8 * spike) * u.scale;
+
+    let corner = vec2<f32>(f32(vi & 1u), f32((vi >> 1u) & 1u)) * 2.0 - 1.0;
+    let at_px = screen + corner * (radius + 1.0);
+    var out: BrainOut;
+    out.pos = vec4<f32>(at_px.x / u.size.x * 2.0 - 1.0, 1.0 - at_px.y / u.size.y * 2.0, 0.0, 1.0);
+    out.local = corner * (radius + 1.0);
+    out.level = level * u.brain.w;
+    out.radius = radius;
+    return out;
+}
+
+// A soft round point, added to what's under it.
+@fragment
+fn fs_brain(in: BrainOut) -> @location(0) vec4<f32> {
+    let v = in.level * (1.0 - smoothstep(in.radius - 0.7, in.radius + 0.7, length(in.local)));
     return vec4<f32>(v, v, v, 1.0);
 }

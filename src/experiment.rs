@@ -111,8 +111,8 @@ pub struct Welcome {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WelcomeStyle {
-    /// White on black: the name large, spec-sheet labels, and a dot-matrix
-    /// brain whose dots flicker with slow, drifting activity.
+    /// White on black: the name large, spec-sheet labels, and a slowly turning
+    /// point-cloud brain (real anatomy) whose cortex flickers with activity.
     #[default]
     Monochrome,
 }

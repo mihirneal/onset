@@ -6,6 +6,7 @@
 //!
 //! `Renderer::headless` draws without a window, for snapshots in tests.
 
+use crate::brain;
 use crate::color::Color;
 use crate::rig::Corner;
 use crate::scene::{Item, Scene, WelcomeScreen};
@@ -128,6 +129,9 @@ pub struct Renderer {
     welcome_pipeline: wgpu::RenderPipeline,
     welcome_buf: wgpu::Buffer,
     welcome_bind: wgpu::BindGroup,
+    brain_pipeline: wgpu::RenderPipeline,
+    /// The brain's surface points, made the first time a welcome screen is drawn.
+    brain_points: Option<(wgpu::Buffer, u32)>,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -396,7 +400,7 @@ impl Renderer {
             label: Some("welcome"),
             entries: &[wgpu::BindGroupLayoutEntry {
                 binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -444,6 +448,45 @@ impl Renderer {
             cache: None,
             multiview_mask: None,
         });
+        // The welcome brain: one quad per surface point, light added up.
+        let brain_attrs = wgpu::vertex_attr_array![0 => Float32x4, 1 => Float32x4];
+        let additive = wgpu::BlendState {
+            color: wgpu::BlendComponent {
+                src_factor: wgpu::BlendFactor::One,
+                dst_factor: wgpu::BlendFactor::One,
+                operation: wgpu::BlendOperation::Add,
+            },
+            alpha: wgpu::BlendComponent::OVER,
+        };
+        let brain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("welcome brain"),
+            layout: Some(&welcome_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &welcome_shader,
+                entry_point: Some("vs_brain"),
+                buffers: &[Some(wgpu::VertexBufferLayout {
+                    array_stride: 32,
+                    step_mode: wgpu::VertexStepMode::Instance,
+                    attributes: &brain_attrs,
+                })],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &welcome_shader,
+                entry_point: Some("fs_brain"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(additive),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: strip,
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            cache: None,
+            multiview_mask: None,
+        });
 
         // Text
         let mut font_system = FontSystem::new();
@@ -476,6 +519,8 @@ impl Renderer {
             welcome_pipeline,
             welcome_buf,
             welcome_bind,
+            brain_pipeline,
+            brain_points: None,
             font_system,
             swash_cache,
             viewport,
@@ -598,6 +643,7 @@ impl Renderer {
                         keys.push(self.ensure_text(text, size * self.scale, font.as_deref(), w))
                     }
                     Item::Welcome(wl) => {
+                        self.ensure_brain();
                         let mut placed = Vec::new();
                         self.layout_welcome(wl, &mut placed);
                         keys.extend(placed.into_iter().map(|p| p.0));
@@ -828,6 +874,10 @@ impl Renderer {
         // Only the screens before t0 have a welcome item; without one this
         // costs nothing (no uniform upload, no draw call).
         let welcome = welcome.map(|wl| self.layout_welcome(wl, &mut texts));
+        let brain = welcome.as_ref().is_some_and(|(u, _)| u.brain[3] > 0.0);
+        if brain {
+            self.ensure_brain();
+        }
         if let Some((u, logo)) = &welcome {
             self.queue.write_buffer(&self.welcome_buf, 0, bytemuck::bytes_of(u));
             if let (Some(logo), Some(path)) = (logo, &self.logo) {
@@ -926,6 +976,11 @@ impl Renderer {
                 pass.set_pipeline(&self.welcome_pipeline);
                 pass.set_bind_group(0, &self.welcome_bind, &[]);
                 pass.draw(0..3, 0..1);
+                if let (true, Some((points, n))) = (brain, &self.brain_points) {
+                    pass.set_pipeline(&self.brain_pipeline);
+                    pass.set_vertex_buffer(0, points.slice(..));
+                    pass.draw(0..4, 0..*n);
+                }
             }
             pass.set_bind_group(0, &self.globals_bind, &[]);
             for d in &draws {
@@ -1027,7 +1082,7 @@ impl Renderer {
                 y += value.h + row_gap;
             }
             dot = standby;
-            brain = [0.74 * w, 0.5 * h, 0.31 * h, 1.0];
+            brain = [0.74 * w, 0.52 * h, 0.29 * h, 1.0];
         } else {
             let top = if self.logo.is_some() { margin + LOGO_HEIGHT * h + 0.05 * h } else { margin };
             let bottom = h - margin - 0.05 * h;
@@ -1087,7 +1142,7 @@ impl Renderer {
                 put(&mut out, body, x0, y, tone(0.92));
             }
             dot = [0.0; 4];
-            brain = [0.8 * w, (y + bottom) / 2.0, 0.21 * h, 0.55];
+            brain = [0.8 * w, (y + bottom) / 2.0, 0.2 * h, 0.6];
         }
 
         // Corners: the logo top left and "POWERED BY ONSET" bottom right,
@@ -1118,6 +1173,24 @@ impl Renderer {
         });
         texts.extend(out);
         (WelcomeUniforms { size: [w, h], time: wl.time, scale: s, brain, rule, dot }, logo)
+    }
+
+    /// Make the brain's surface points and upload them, once.
+    fn ensure_brain(&mut self) {
+        if self.brain_points.is_some() {
+            return;
+        }
+        // The same for every renderer, so make them once per process.
+        static POINTS: std::sync::OnceLock<Vec<[f32; 8]>> = std::sync::OnceLock::new();
+        let points = POINTS.get_or_init(brain::surface_points);
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("welcome brain"),
+            size: std::mem::size_of_val(points.as_slice()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, bytemuck::cast_slice(points));
+        self.brain_points = Some((buffer, points.len() as u32));
     }
 
     /// `text` in a light weight at `px`, or smaller until it fits on one
