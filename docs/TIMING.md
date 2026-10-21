@@ -26,6 +26,8 @@ The **measured onset** of an event is the flip time of its first frame, which is
 
 The **refresh period** is measured (median frame interval) during the instructions and waiting screens and locked when the run starts. It's recorded as `measured_refresh_hz` in `run.json`.
 
+**Welcome screen:** with a `[welcome]` table, those two screens draw an animated background in one full-screen shader pass. Its animation time comes from the predicted flip times, not from sleeps or the wall clock. From the first kept trigger on, only the experiment's own screens are drawn, so the welcome screen adds no draw calls and no per-frame work during the run.
+
 **Dropped frames:** an interval longer than 1.5 periods counts `round(interval / period) − 1` missed refreshes. These appear in `frames.tsv`, the status line, and `run.json`.
 
 **Remaining error:** the flip time is when the GPU swapped buffers. The display or projector adds its own fixed lag on top, often 1–3 frames for MR projectors. Measure it with the photodiode rig (see `docs/VALIDATION.md`). A constant lag is harmless for fMRI; jitter is what matters.

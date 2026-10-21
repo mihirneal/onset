@@ -16,6 +16,9 @@ pub struct Experiment {
     pub experiment: Meta,
     #[serde(default)]
     pub scanner: Scanner,
+    /// Animated title screen behind the instructions and the wait for the
+    /// scanner. Off unless the experiment has a `[welcome]` table.
+    pub welcome: Option<Welcome>,
     #[serde(default)]
     pub stimuli: BTreeMap<String, StimulusDef>,
     pub trial: TrialDef,
@@ -77,6 +80,52 @@ pub struct Scanner {
     pub dummy_volumes: u32,
     /// Volumes in the run; the run lasts at least `volumes * tr` seconds.
     pub volumes: Option<u32>,
+}
+
+/// The welcome screen shown before t = 0 (`[welcome]`).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Welcome {
+    #[serde(default)]
+    pub style: WelcomeStyle,
+    /// Study title; defaults to `[experiment] name`.
+    pub title: Option<String>,
+    /// Small label above the participant's name (`onset run --name`), or
+    /// above the title when no name is given.
+    #[serde(default = "default_greeting")]
+    pub greeting: String,
+    /// Color of all text on the welcome screens, including the instructions.
+    #[serde(default = "default_foreground")]
+    pub color: Color,
+    /// Font of the name, title and instructions (unless `[experiment] font` is set).
+    #[serde(default = "default_welcome_font")]
+    pub font: String,
+    /// Font of the small labels.
+    #[serde(default = "default_welcome_mono_font")]
+    pub mono_font: String,
+    /// "Powered by Onset" in the bottom-right corner.
+    #[serde(default = "yes")]
+    pub powered_by: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WelcomeStyle {
+    /// White on black: the name large, spec-sheet labels, and a real brain
+    /// seen from the side as a matrix of dots that flicker with activity.
+    #[default]
+    Monochrome,
+}
+
+fn default_greeting() -> String {
+    "Welcome".into()
+}
+/// Bundled with Onset (`src/fonts`).
+fn default_welcome_font() -> String {
+    "Space Grotesk".into()
+}
+fn default_welcome_mono_font() -> String {
+    "Space Mono".into()
 }
 
 /// A named thing that can be drawn. Strings may contain `{column}` templates.

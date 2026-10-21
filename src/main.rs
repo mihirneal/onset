@@ -107,6 +107,9 @@ struct RunArgs {
     /// Session label.
     #[arg(long)]
     ses: Option<String>,
+    /// Participant's name for the welcome screen. Shown only; never saved.
+    #[arg(long)]
+    name: Option<String>,
     /// Run number. Defaults to the next one without data.
     #[arg(long, short)]
     run: Option<u32>,
@@ -180,6 +183,9 @@ fn cmd_validate(exp_path: &Path, rig_path: Option<&Path>, schedule: Option<&Path
     let exp = load_experiment(exp_path, schedule)?;
     let rig = load_rig(rig_path)?;
     let tl = schedule::compile(&exp, 1, nominal_hz(&rig))?;
+    if let Some(logo) = rig.site.logo.as_ref().filter(|p| !p.exists()) {
+        println!("{} the rig's [site] logo {} doesn't exist", yellow("warning:"), logo.display());
+    }
     for ev in &exp.trial.events {
         if let Some(r) = &ev.response {
             for b in &r.buttons {
@@ -468,6 +474,8 @@ struct RunSetup {
     exp_path: PathBuf,
     rig_path: Option<PathBuf>,
     robot: bool,
+    /// For the welcome screen only: keep it out of run.json and every log.
+    name: Option<String>,
 }
 
 fn prompt(label: &str) -> Result<String> {
@@ -505,6 +513,12 @@ fn cmd_run(args: RunArgs) -> Result<()> {
     }
     if args.robot {
         println!("   {}", yellow("robot participant: button presses are simulated"));
+    }
+    if args.name.is_some() && exp.welcome.is_none() {
+        println!(
+            "{} --name is shown on the [welcome] screen, and this experiment has none",
+            yellow("warning:")
+        );
     }
     let out_dir = args.out.clone().unwrap_or_else(|| rig.output.dir.clone());
     let task = exp.experiment.task.clone();
@@ -570,6 +584,7 @@ fn cmd_run(args: RunArgs) -> Result<()> {
         exp_path: args.experiment,
         rig_path: args.rig,
         robot: args.robot,
+        name: args.name,
     };
     present(Mode::Run(setup))
 }
@@ -779,6 +794,11 @@ impl App {
             renderer.photodiode =
                 Some(PhotodiodePatch { corner: rig.photodiode.corner, size: rig.photodiode.size });
         }
+        if let Some(logo) = &rig.site.logo {
+            if let Err(e) = renderer.set_logo(logo) {
+                eprintln!("{} {e:#}; the welcome screen will have no logo", yellow("warning:"));
+            }
+        }
         let monitor_hz =
             monitor.as_ref().and_then(|m| m.refresh_rate_millihertz()).map(|mhz| mhz as f64 / 1000.0);
 
@@ -868,6 +888,9 @@ impl App {
 
                 let mut run =
                     Run::new(setup.exp, setup.timeline.clone(), hz, setup.rig.photodiode.flash_frames);
+                if let Some(name) = &setup.name {
+                    run.set_participant_name(name);
+                }
                 let scenes = run.all_scenes();
                 let robot = setup.robot.then(|| Robot {
                     rng: onset::rng::Rng::new(setup.timeline.seed ^ 0x5eed),

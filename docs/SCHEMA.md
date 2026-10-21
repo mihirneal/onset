@@ -29,6 +29,35 @@ Any string marked *template* can use `{column}` to insert a value from the curre
 
 Colors can be names (`white black gray red green blue yellow`), hex values (`"#808080"`, `"#fff"`, or `"#ff000080"` with alpha), or `[r, g, b]` / `[r, g, b, a]` from 0 to 255. Values go to the display without gamma conversion.
 
+### `[welcome]`
+
+An optional animated welcome screen behind the instructions and the "waiting for the scanner" screen. Leave the table out and those screens are plain text on the experiment's `background`, as before. `[welcome]` with no keys turns it on with the defaults.
+
+```toml
+[welcome]
+style = "monochrome"
+```
+
+| key | default | |
+|---|---|---|
+| `style` | `"monochrome"` | White on black: the name large, spec-sheet labels, a hairline rule, and a brain seen from the side as a matrix of dots that flicker with slow, drifting activity. The brain is the real cortex of the MNI ICBM152 template |
+| `title` | `[experiment] name` | Study title |
+| `greeting` | `"Welcome"` | Small label above the participant's name |
+| `color` | `"white"` | Color of all text on these screens, including the instructions |
+| `font` | `"Space Grotesk"` | Font of the name, title and instructions (unless `[experiment] font` is set). Space Grotesk and Space Mono ship with Onset |
+| `mono_font` | `"Space Mono"` | Font of the small labels |
+| `powered_by` | `true` | "Powered by Onset" in the bottom-right corner |
+
+`onset run --name "First Last"` puts the participant's name in front, large, with the greeting above it. Without `--name`, the title takes its place. Everything is aligned to one left margin. On the waiting screen the name sits in the middle with `STUDY` and `STATUS` rows under it, and the waiting text has a breathing standby dot; the brain is on the right. On the instructions screen the name moves to the top, with the study on the right, and the instructions go under a hairline rule. The instructions are drawn at `[experiment] font_size`, but at most 3.4% of the screen height, and get smaller if they don't fit. If even that isn't enough the name is left out, so the instructions stay readable.
+
+The rig's `[site] logo` goes in the top-left corner (see the rig file below). The logo and the footer move out of the way of the photodiode patch if it's in their corner.
+
+The welcome screen is gone from the first kept trigger (t = 0): from then on only the experiment's own screens are drawn, and the welcome background costs nothing (no draw call, no per-frame work). Its animation runs on the frame clock, like checkerboard reversals. The photodiode patch is drawn on top of it exactly as on any other screen.
+
+The participant's name is display only. It is never written to `events.tsv`, `run.json`, the raw logs, or any other file; the subject label (`--sub`) stays the only identifier in the data.
+
+The welcome screen is black. If the experiment's background is bright, the switch at t = 0 is a step in luminance, so start the run with a few seconds of baseline, as the examples do.
+
 ### `[scanner]`
 
 | key | default | |
@@ -150,6 +179,9 @@ flash_frames = 3       # white for this many frames at every onset, black otherw
 
 [output]
 dir = "data"
+
+[site]
+logo = "logo.png"      # PNG or JPEG in the welcome screen's top-left corner (a white logo with a transparent background suits it); relative to the rig file, ~/ for home
 ```
 
 Operator keys always work, whatever the rig: **Space** or **Enter** continues past the instructions, and **Esc** aborts and saves.
