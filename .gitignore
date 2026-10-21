@@ -15,6 +15,8 @@ sub-*/
 # Licensed or third-party stimulus sets (e.g. COCO-based image sets) may not
 # be redistributed: keep them outside the repo, or in /stimuli/, never committed.
 /stimuli/
+/examples/nsd/images/
+/examples/nsd/schedule.tsv
 *_nsd[0-9]*.png
 nsd_stimuli.hdf5
 *.hdf5

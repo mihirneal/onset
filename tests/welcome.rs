@@ -246,6 +246,10 @@ fn welcome_screen_renders_offscreen() {
     run.save(dir.join("flanker_after_t0.png")).unwrap();
     for name in ["checkerboard-localizer", "nsd", "nsd-resting"] {
         let exp = example(name);
+        // examples/nsd's schedule is made from your own images; skip it until then.
+        if exp.schedule.file.as_ref().is_some_and(|f| !exp.resolve_path(f).exists()) {
+            continue;
+        }
         let [instructions, _, waiting, _] = screens(&exp, Some("Sam Example"));
         r.snapshot(&instructions, Some(false))
             .unwrap()

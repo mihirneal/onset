@@ -67,6 +67,13 @@ pub fn load_rows(exp: &Experiment) -> Result<(Vec<Vars>, Vec<String>)> {
     let s = &exp.schedule;
     if let Some(file) = &s.file {
         let path = exp.resolve_path(file);
+        if s.generate.is_some() && !path.exists() {
+            bail!(
+                "{} doesn't exist yet: make it with `onset make-schedule <experiment> --images <folder>`, \
+                 or pass --schedule",
+                path.display()
+            );
+        }
         let delim = match path.extension().and_then(|e| e.to_str()) {
             Some("csv") => b',',
             _ => b'\t',

@@ -22,5 +22,7 @@ jobs:
       - name: Validate examples
         run: |
           for exp in examples/*/experiment.toml; do
+            # examples/nsd ships without images or a schedule; tests/make_schedule.rs validates it.
+            [ "$exp" = examples/nsd/experiment.toml ] && continue
             ./target/release/onset validate "$exp" --rig examples/rigs/dev.toml
           done

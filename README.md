@@ -34,7 +34,7 @@ onset schedule examples/flanker/experiment.toml   # print every planned event
 onset timing-test --seconds 10                    # refresh rate, jitter, dropped frames
 onset displays                                    # list monitors for the rig file
 onset ports                                       # list serial ports (trigger boxes)
-onset make-schedule examples/nsd/experiment.toml  # build a trial list from a folder of images
+onset make-schedule examples/nsd/experiment.toml --images ~/stimuli/scenes  # trial list from a folder of images
 onset probe --out probe.tsv                       # record the photodiode/trigger probe
 onset check-timing --probe probe.tsv --run data/sub-01/onset   # logged vs measured onsets
 ```
@@ -47,7 +47,7 @@ onset check-timing --probe probe.tsv --run data/sub-01/onset   # logged vs measu
 |---|---|
 | [`examples/flanker`](examples/flanker) | Event-related flanker task: jittered onsets from a TSV, button responses, ✓/✗ feedback |
 | [`examples/checkerboard-localizer`](examples/checkerboard-localizer) | Block-design 8 Hz radial checkerboard vs. fixation |
-| [`examples/nsd`](examples/nsd) | Image paradigm modeled on the Natural Scenes Dataset core run: 3 s images + 1 s gap, continuous old/new recognition. Ships with placeholder images; see its [README](examples/nsd/README.md) for using real images |
+| [`examples/nsd`](examples/nsd) | Image paradigm modeled on the Natural Scenes Dataset core run: 3 s images + 1 s gap, continuous old/new recognition. Bring your own copy of the images (they can't be redistributed); see its [README](examples/nsd/README.md) |
 | [`examples/nsd-resting`](examples/nsd-resting) | Resting-state run with an instructed-breath cue |
 
 `--schedule FILE` (on `run`, `validate` and `schedule`) swaps in a different trial list without editing the experiment; a copy is saved with the run's logs.
