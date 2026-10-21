@@ -18,8 +18,8 @@ Developed and tested at the Center for Advanced Magnetic Resonance Imaging (CAMR
 # install Rust once: https://rustup.rs
 cargo build --release
 
-# Run the flanker example in a window with a fake scanner (TR 2 s)
-# and a simulated participant pressing buttons:
+# Run the flanker example fullscreen with a fake scanner (TR 2 s) and a
+# simulated participant pressing buttons (add --windowed for a window):
 ./target/release/onset run examples/flanker/experiment.toml \
     --rig examples/rigs/dev.toml --simulate --robot --sub 01
 ```

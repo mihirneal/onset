@@ -1,7 +1,7 @@
 # Block-design visual localizer: 16 s of 8 Hz flickering checkerboard
 # alternating with 16 s of fixation, 6 cycles, starting and ending on rest.
 #
-#   onset run examples/checkerboard-localizer/experiment.toml --simulate --windowed
+#   onset run examples/checkerboard-localizer/experiment.toml --simulate
 
 [experiment]
 name = "Checkerboard localizer"
