@@ -744,6 +744,9 @@ struct TimingTest {
     /// Once the time is up: keep drawing until the last reports are in, or
     /// until this time.
     drain_until: Option<Instant>,
+    /// When the window opened, to end the test on time even if the display
+    /// never takes a frame.
+    opened: Instant,
 }
 
 struct TestFrame {
@@ -886,6 +889,7 @@ impl App {
                 intervals: Vec::new(),
                 frames: Vec::new(),
                 drain_until: None,
+                opened: Instant::now(),
             }),
             Mode::Run(setup) => {
                 let setup = Box::new(setup);
@@ -1168,6 +1172,25 @@ impl App {
                 ar.run.update(epoch.elapsed().as_secs_f64());
                 if let Some(result) = after_frame(ar, &self.writer, &mut self.console) {
                     self.result = Some(result);
+                    el.exit();
+                    return;
+                }
+            }
+            // A timing test ends on time even if the display stops taking
+            // frames, or never takes one.
+            if let ActiveKind::TimingTest(tt) = &mut active.kind {
+                if tt.start.is_none() && tt.opened.elapsed().as_secs_f64() >= tt.seconds {
+                    self.result = Some(Err(anyhow::anyhow!(
+                        "the display never accepted a frame (screen locked, display asleep, or window hidden?)"
+                    )));
+                    el.exit();
+                    return;
+                }
+                let late = tt.start.is_some_and(|start| {
+                    epoch.elapsed().as_secs_f64() - start >= tt.seconds + FEEDBACK_TIMEOUT_S
+                });
+                if late || tt.drain_until.is_some_and(|until| Instant::now() >= until) {
+                    tt.finish();
                     el.exit();
                     return;
                 }
