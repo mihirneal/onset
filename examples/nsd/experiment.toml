@@ -6,8 +6,9 @@
 # (714 px), fixation dot 0.2° (18 px) red at 50% opacity with a 3 px black
 # border, always on top. Continuous recognition: button 1 = NEW, 2 = OLD.
 #
-# Make a schedule (placeholder images unless you pass --images):
-#   onset make-schedule examples/nsd/experiment.toml --run 1
+# No images ship with this example: the image set can't be redistributed. Get
+# your own copy (see README.md), keep it outside the repo, then make a schedule:
+#   onset make-schedule examples/nsd/experiment.toml --run 1 --images ~/stimuli/shared1000
 #   onset run examples/nsd/experiment.toml --rig examples/rigs/dev.toml --simulate --robot --sub 01
 #
 # Differences from the original:
@@ -77,13 +78,12 @@ response = { buttons = ["1", "2"], correct = "{answer}", window = 4.0 }
 file = "schedule.tsv"
 onset_column = "onset"
 
-# What `onset make-schedule` writes to schedule.tsv: 68 four-second slots after
-# the 12 s blank. Odd runs have 63 images and 5 blank slots, even runs drop
-# the 63rd image (62 + 6). Blanks split the images into stretches of 9-14.
-# About 30% of trials repeat an image seen before (in this run or an earlier
-# one listed in --history).
+# What `onset make-schedule --images <folder>` writes to schedule.tsv: 68
+# four-second slots after the 12 s blank. Odd runs have 63 images and 5 blank
+# slots, even runs drop the 63rd image (62 + 6). Blanks split the images into
+# stretches of 9-14. About 30% of trials repeat an image seen before (in this
+# run or an earlier one listed in --history).
 [schedule.generate]
-images = "images"
 start = 12.0
 slot = 4.0
 slots = 68

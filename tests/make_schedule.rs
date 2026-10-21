@@ -15,16 +15,35 @@ fn make_schedule(args: &[&str]) -> Output {
 }
 
 #[test]
-fn reproduces_the_example_schedule() {
-    // examples/nsd/schedule.tsv was made with seed 1, run 1.
-    let out = scratch("example").join("schedule.tsv");
-    let o = make_schedule(&["examples/nsd/experiment.toml", "--run", "1", "--out", out.to_str().unwrap()]);
+fn reproduces_the_python_schedule_and_validates() {
+    // tests/data/make_schedule_run1.tsv is what the Python script drew with
+    // seed 1, run 1 from 80 images. Empty files stand in for them: only
+    // their names and order matter here.
+    let dir = scratch("example");
+    let images = dir.join("images");
+    std::fs::create_dir_all(&images).unwrap();
+    for i in 0..80 {
+        std::fs::write(images.join(format!("img{i:03}.png")), b"").unwrap();
+    }
+    let exp = dir.join("experiment.toml");
+    std::fs::copy("examples/nsd/experiment.toml", &exp).unwrap();
+    let out = dir.join("schedule.tsv");
+    let o = make_schedule(&[exp.to_str().unwrap(), "--run", "1", "--images", images.to_str().unwrap()]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     assert!(String::from_utf8_lossy(&o.stdout).contains("63 image trials (22 old), 5 blank slots, run 1"));
     assert_eq!(
-        std::fs::read_to_string(out).unwrap(),
-        std::fs::read_to_string("examples/nsd/schedule.tsv").unwrap()
+        std::fs::read_to_string(&out).unwrap(),
+        std::fs::read_to_string("tests/data/make_schedule_run1.tsv").unwrap()
     );
+
+    // The example ships without a schedule, so CI checks it here, with this one.
+    let o = Command::new(env!("CARGO_BIN_EXE_onset"))
+        .arg("validate")
+        .arg(&exp)
+        .args(["--rig", "examples/rigs/dev.toml"])
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
 }
 
 #[test]

@@ -365,7 +365,7 @@ mod tests {
     fn numbers_from_names() {
         assert_eq!(name_number("shared0001_nsd02951", "nsd").as_deref(), Some("2951"));
         assert_eq!(name_number("nsdx_nsd000", "nsd").as_deref(), Some("0"));
-        assert_eq!(name_number("placeholder_052", "nsd"), None);
+        assert_eq!(name_number("img052", "nsd"), None);
         assert_eq!(seconds(12.0), "12.0");
         assert_eq!(seconds(4.25), "4.25");
     }
