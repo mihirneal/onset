@@ -861,6 +861,7 @@ impl App {
             renderer.photodiode =
                 Some(PhotodiodePatch { corner: rig.photodiode.corner, size: rig.photodiode.size });
         }
+        renderer.set_visible_area(rig.display.visible_area)?;
         if let Some(logo) = &rig.site.logo {
             if let Err(e) = renderer.set_logo(logo) {
                 eprintln!("{} {e:#}; the welcome screen will have no logo", yellow("warning:"));

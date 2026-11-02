@@ -15,6 +15,11 @@
 fullscreen = true
 expected_hz = 120
 hide_cursor = true
+# The bore and the head coil usually hide the edges of an MR display. This is
+# the part the participant can see, centered, as fractions of the screen's
+# width and height: the welcome screen stays inside it. Check yours from the
+# participant's position and adjust.
+visible_area = [0.7, 0.7]
 
 [trigger]
 # Read the fORP directly over USB: triggers and buttons arrive whichever

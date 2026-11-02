@@ -265,3 +265,40 @@ fn welcome_screen_renders_offscreen() {
     let [instructions, ..] = screens(&exp, Some("Sam Example"));
     retina.snapshot(&instructions, None).unwrap().save(dir.join("flanker_instructions_retina.png")).unwrap();
 }
+
+/// With a smaller visible area (a scanner bore hiding the screen's edges),
+/// everything of the welcome screen stays inside it.
+#[test]
+fn welcome_screen_stays_inside_the_visible_area() {
+    let mut r = match Renderer::headless(1920, 1080, 1.0) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("skipping: no GPU for offscreen rendering ({e:#})");
+            return;
+        }
+    };
+    let area = [0.7, 0.7];
+    r.photodiode = Some(PhotodiodePatch { corner: Corner::BottomLeft, size: 40.0 });
+    r.set_visible_area(area).unwrap();
+    r.set_logo(&scanner_logo()).unwrap();
+    let snapshots = std::env::var_os("ONSET_WELCOME_SNAPSHOTS").map(PathBuf::from);
+    let [instructions, _, waiting, _] = screens(&example("flanker"), Some("Sam Example"));
+    let (left, top) = ((1.0 - area[0]) / 2.0 * 1920.0, (1.0 - area[1]) / 2.0 * 1080.0);
+    for (name, scene) in [("instructions", instructions), ("waiting", waiting)] {
+        let img = r.snapshot(&scene, Some(false)).unwrap();
+        let (mut inside, mut outside) = (0.0f32, 0.0f32);
+        for y in 0..1080 {
+            for x in 0..1920 {
+                let (fx, fy) = (x as f32, y as f32);
+                let within = fx >= left && fx < 1920.0 - left && fy >= top && fy < 1080.0 - top;
+                let l = lum(&img, x, y);
+                if within { inside = inside.max(l) } else { outside = outside.max(l) }
+            }
+        }
+        assert!(inside > 0.9, "{name}: the text should be inside the visible area");
+        assert!(outside < 0.1, "{name}: something bright outside the visible area ({outside})");
+        if let Some(dir) = &snapshots {
+            img.save(dir.join(format!("flanker_{name}_visible_70.png"))).unwrap();
+        }
+    }
+}
