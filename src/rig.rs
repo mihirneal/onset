@@ -51,6 +51,12 @@ pub struct Display {
     pub expected_hz: Option<f64>,
     #[serde(default = "yes")]
     pub hide_cursor: bool,
+    /// The part of the screen the participant can see, centered: its width
+    /// and height as fractions of the screen's. In a scanner the bore and
+    /// the head coil often hide the screen's edges; the welcome screen keeps
+    /// everything inside this area, and text wraps within it.
+    #[serde(default = "whole_screen")]
+    pub visible_area: [f32; 2],
 }
 
 impl Default for Display {
@@ -61,8 +67,13 @@ impl Default for Display {
             window_size: default_window_size(),
             expected_hz: None,
             hide_cursor: true,
+            visible_area: whole_screen(),
         }
     }
+}
+
+fn whole_screen() -> [f32; 2] {
+    [1.0, 1.0]
 }
 
 fn yes() -> bool {
@@ -235,6 +246,13 @@ impl Rig {
         }
         if rig.trigger.serial_char.chars().count() != 1 {
             bail!("{}: [trigger] serial_char must be a single character", path.display());
+        }
+        if rig.display.visible_area.iter().any(|f| !(0.25..=1.0).contains(f)) {
+            bail!(
+                "{}: [display] visible_area is [width, height] as fractions of the screen, each from 0.25 to 1, \
+                 e.g. [0.8, 0.7]",
+                path.display()
+            );
         }
         Ok(rig)
     }

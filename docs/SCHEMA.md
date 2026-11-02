@@ -50,7 +50,7 @@ style = "monochrome"
 
 `onset run --name "First Last"` puts the participant's name in front, large, with the greeting above it. Without `--name`, the title takes its place. Everything is aligned to one left margin. On the waiting screen the name sits in the middle with `STUDY` and `STATUS` rows under it, and the waiting text has a breathing standby dot; the brain is on the right. On the instructions screen the name moves to the top, with the study on the right, and the instructions go under a hairline rule. Sizes follow the content: the instructions are as large as the space allows (from 4.3% of the screen height down to 2.6%; `[experiment] font_size` doesn't apply here), and the brain fills the space the text leaves. If the instructions don't fit even at the smallest size, the name is left out, so they stay readable.
 
-The rig's `[site] logo` goes in the top-left corner (see the rig file below). The logo and the footer move out of the way of the photodiode patch if it's in their corner.
+The rig's `[site] logo` goes in the top-left corner (see the rig file below). If the rig sets `[display] visible_area`, the whole welcome screen, logo and footer included, is laid out inside that centered part of the screen, scaled to it, and the edges stay black. The logo and the footer move out of the way of the photodiode patch if it's in their corner.
 
 The welcome screen is gone from the first kept trigger (t = 0): from then on only the experiment's own screens are drawn, and the welcome background costs nothing (no draw call, no per-frame work). Its animation runs on the frame clock, like checkerboard reversals. The photodiode patch is drawn on top of it exactly as on any other screen.
 
@@ -155,6 +155,9 @@ fullscreen = true
 window_size = [1280, 800]   # when not fullscreen
 expected_hz = 60       # warn if the measured refresh differs by > 1%
 hide_cursor = true
+visible_area = [0.8, 0.7]   # the part of the screen the participant can see, centered, as fractions of
+                            # its width and height (default [1, 1]). In a scanner the bore and head coil
+                            # often hide the edges: the welcome screen stays inside, and text wraps within it
 
 [trigger]
 source = "keyboard"    # "keyboard" | "hid" | "serial" | "simulated"

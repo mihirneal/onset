@@ -120,7 +120,7 @@ struct Shaped {
 const BUNDLED_FONTS: [&[u8]; 2] =
     [include_bytes!("fonts/SpaceGrotesk-Variable.ttf"), include_bytes!("fonts/SpaceMono-Regular.ttf")];
 
-/// Logo height, as a fraction of the screen height.
+/// Logo height, as a fraction of the visible area's height.
 const LOGO_HEIGHT: f32 = 0.085;
 
 struct GpuImage {
@@ -188,6 +188,9 @@ pub struct Renderer {
     next_id: u64,
     /// Shown in a top corner of the welcome screen (`set_logo`).
     logo: Option<PathBuf>,
+    /// The part of the screen the participant can see, centered, as
+    /// fractions of its width and height (`set_visible_area`).
+    visible_area: [f32; 2],
     window: Option<Arc<Window>>,
 }
 
@@ -594,6 +597,7 @@ impl Renderer {
             present_failed: false,
             next_id: 0,
             logo: None,
+            visible_area: [1.0, 1.0],
             window,
         }
     }
@@ -650,13 +654,21 @@ impl Renderer {
         self.upload_logo().inspect_err(|_| self.logo = None)
     }
 
+    /// Keep the welcome screen inside the part of the screen the participant
+    /// can see: a centered area, as fractions of the screen's width and
+    /// height (the rig's `[display] visible_area`). Text also wraps within it.
+    pub fn set_visible_area(&mut self, area: [f32; 2]) -> Result<()> {
+        self.visible_area = area;
+        self.upload_logo()
+    }
+
     /// Upload the logo resized to the size it's drawn at, so it stays crisp
     /// (images are drawn without mipmaps).
     fn upload_logo(&mut self) -> Result<()> {
         let Some(path) = self.logo.clone() else { return Ok(()) };
         let img =
             image::open(&path).with_context(|| format!("can't load logo {}", path.display()))?.to_rgba8();
-        let th = (LOGO_HEIGHT * self.config.height as f32).round().max(1.0) as u32;
+        let th = (LOGO_HEIGHT * self.visible_area[1] * self.config.height as f32).round().max(1.0) as u32;
         let tw = (th as f32 * img.width() as f32 / img.height() as f32).round().max(1.0) as u32;
         let img = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Lanczos3);
         self.upload_image(&path, &img);
@@ -1136,10 +1148,13 @@ impl Renderer {
     }
 
     /// Lay out the welcome screen: its text goes into `texts`; returns the
-    /// shader's uniforms and where the logo goes. Sizes follow the screen
-    /// height, so it looks the same on any display, and the content: the
-    /// instructions get as large as the room allows, and the brain fills the
-    /// space the text leaves.
+    /// shader's uniforms and where the logo goes. It's laid out in the
+    /// visible area as if that were the whole screen, so nothing lands where
+    /// the participant can't see it (in a scanner, the bore and the head coil
+    /// often hide the screen's edges). Sizes follow the area's height, so it
+    /// looks the same on any display, and the content: the instructions get
+    /// as large as the room allows, and the brain fills the space the text
+    /// leaves.
     ///
     /// Everything hangs off one left margin, like a spec sheet: a mono label,
     /// the name large and light, a hairline rule, then label/value rows, with
@@ -1151,7 +1166,13 @@ impl Renderer {
         wl: &WelcomeScreen,
         texts: &mut Vec<(String, f32, f32, Color)>,
     ) -> (WelcomeUniforms, Option<ImageInstance>) {
-        let (w, h) = (self.config.width as f32, self.config.height as f32);
+        let (screen_w, screen_h) = (self.config.width as f32, self.config.height as f32);
+        // The visible area, centered: everything below is in its pixels, and
+        // `(ox, oy)`, its top-left corner on the screen, moves the shader's
+        // parts into place at the end. Text and the logo are placed from the
+        // center, which the area shares with the screen.
+        let (w, h) = (self.visible_area[0] * screen_w, self.visible_area[1] * screen_h);
+        let (ox, oy) = ((screen_w - w) / 2.0, (screen_h - h) / 2.0);
         let s = self.scale;
         let (display, mono) = (Some(wl.font.as_str()), Some(wl.mono_font.as_str()));
         let tone = |a: f32| Color { a: wl.color.a * a, ..wl.color };
@@ -1281,9 +1302,10 @@ impl Renderer {
         }
 
         // Corners: the logo top left and "POWERED BY ONSET" bottom right,
-        // each moving out of the photodiode patch's way.
+        // each moving out of the photodiode patch's way if the patch (in the
+        // screen's corner) reaches into the visible area.
         let patch = |corner: Corner| match &self.photodiode {
-            Some(p) if p.corner == corner => p.size * s + margin,
+            Some(p) if p.corner == corner && p.size * s > ox.max(oy) => p.size * s - ox + margin,
             _ => 0.0,
         };
         let footer_left = patch(Corner::BottomRight);
@@ -1307,7 +1329,16 @@ impl Renderer {
             }
         });
         texts.extend(out);
-        (WelcomeUniforms { size: [w, h], time: wl.time, scale: s, brain, rule, dot }, logo)
+        let [bx, by, bscale, bon] = brain;
+        let uniforms = WelcomeUniforms {
+            size: [screen_w, screen_h],
+            time: wl.time,
+            scale: s,
+            brain: [bx + ox, by + oy, bscale, bon],
+            rule: [rule[0] + ox, rule[1] + oy, rule[2] + ox, rule[3]],
+            dot: [dot[0] + ox, dot[1] + oy, dot[2], dot[3]],
+        };
+        (uniforms, logo)
     }
 
     /// Upload the brain's dots, once.
@@ -1353,7 +1384,7 @@ impl Renderer {
         let style = TextStyle {
             weight: Weight::NORMAL,
             spacing: 0.0,
-            wrap: 0.9 * screen_w,
+            wrap: 0.9 * screen_w * self.visible_area[0],
             left: false,
             leading: 1.3,
         };
